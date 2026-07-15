@@ -5,6 +5,7 @@
 
 #include "resource.h"
 #include "utils.h"
+#include "gmcp.h"
 
 #include <windows.h>
 
@@ -260,9 +261,11 @@ bool HandleMainTimer(HWND hwnd, WPARAM timerId)
         KillWinTimer(hwnd, ID_TIMER_AUTORECONNECT);
         if (g_app && g_app->hasActiveSession && g_app->activeSession.autoReconnect)
         {
+            // 현재 창이 보관한 주소록 사본만 사용합니다. 끊어진 세션과 같은
+            // 이름을 재사용하지 않고 정리 후 새 고유 내부 세션으로 접속합니다.
             AddressBookEntry entry = g_app->activeSession;
             g_app->isConnected = false;
-            ConnectAddressBookEntry(entry);
+            BeginSwitchToAddressBookEntry(entry);
         }
         return true;
 
@@ -271,8 +274,10 @@ bool HandleMainTimer(HWND hwnd, WPARAM timerId)
         if (g_app && g_app->hasPendingConnect)
         {
             AddressBookEntry entry = g_app->pendingConnectEntry;
+            std::wstring sessionName = g_app->pendingConnectSessionName;
+            g_app->pendingConnectSessionName.clear();
             g_app->hasPendingConnect = false;
-            ConnectAddressBookEntry(entry);
+            ConnectAddressBookEntry(entry, sessionName);
         }
         return true;
 
@@ -282,9 +287,11 @@ bool HandleMainTimer(HWND hwnd, WPARAM timerId)
         {
             std::wstring charsetCmd = g_app->pendingQuickCharsetCommand;
             std::wstring sessionCmd = g_app->pendingQuickConnectCommand;
+            std::wstring sessionName = g_app->pendingQuickSessionName;
 
             g_app->pendingQuickCharsetCommand.clear();
             g_app->pendingQuickConnectCommand.clear();
+            g_app->pendingQuickSessionName.clear();
             g_app->hasPendingQuickConnect = false;
 
             if (!Trim(charsetCmd).empty())
@@ -292,7 +299,7 @@ bool HandleMainTimer(HWND hwnd, WPARAM timerId)
             if (!Trim(sessionCmd).empty())
             {
                 SendRawCommandToMud(sessionCmd);
-                MarkKnownTinTinSession(L"new");
+                MarkKnownTinTinSession(sessionName);
             }
         }
         return true;
@@ -667,12 +674,15 @@ bool ShutdownMainWindow(HWND hwnd)
     SaveCaptureLogSettings();
     SaveScreenSizeSettings();
     SaveChatCaptureSettings();
-    SaveAddressBook();
+    // 주소록은 추가/수정/삭제/접속 시 즉시 저장됩니다. 새 창마다 별도 프로세스로
+    // 실행되므로 종료 시 오래된 메모리 사본을 다시 저장하면 다른 창의 변경을 덮을 수 있습니다.
     SaveFontRenderSettings();
     SaveHighlightSettings();
     SaveAutoLoginSettings();
     StopCaptureLog();
     CloseChatLog();
+    CloseGmcpWindows();
+    CloseNumpadViewWindow();
     StopProcessAndThread();
     SaveVariableSettings();
     SaveNumpadSettings();
@@ -799,6 +809,13 @@ LRESULT HandleMainCreate(HWND hwnd)
     LoadVariableSettings();
     LoadNumpadSettings();
     LoadGeneralSettings();
+
+    // F1~F12, Alt/Shift/Ctrl 조합 48개를 먼저 구성한 뒤
+    // 사용자가 저장한 기능키 명령을 불러옵니다. 초기화를 생략하면
+    // vk 값이 0인 상태라 목록에 F-111만 보이고 수정키 탭이 비게 됩니다.
+    InitShortcutBindings();
+    LoadFunctionKeySettings();
+
     LoadShortcutSettings();
     LoadAbbreviationSettings();
     LoadTimerSettings();
@@ -952,6 +969,11 @@ bool HandleMainInitMenuPopup(HMENU menu)
     const UINT state = hasHistory ? MF_ENABLED : MF_GRAYED;
     EnableMenuItem(menu, ID_MENU_EDIT_COPY_PAST, MF_BYCOMMAND | state);
     EnableMenuItem(menu, ID_MENU_EDIT_SAVE_PAST, MF_BYCOMMAND | state);
+    EnableMenuItem(menu, ID_LOG_COPY_HISTORY, MF_BYCOMMAND | state);
+    EnableMenuItem(menu, ID_LOG_SAVE_HISTORY, MF_BYCOMMAND | state);
+    EnableMenuItem(menu, ID_LOG_COPY_HISTORY_ANSI, MF_BYCOMMAND | state);
+    EnableMenuItem(menu, ID_LOG_SAVE_HISTORY_ANSI, MF_BYCOMMAND | state);
+    EnableMenuItem(menu, ID_LOG_CLEAR_HISTORY, MF_BYCOMMAND | state);
     ModifyMenuW(menu, ID_MENU_CAPTURE_TOGGLE, MF_BYCOMMAND | MF_STRING,
                 ID_MENU_CAPTURE_TOGGLE,
                 g_app->captureLogEnabled ? L"갈무리 켜짐" : L"갈무리 꺼짐");
@@ -1053,6 +1075,8 @@ namespace
 bool HandleMainSize(HWND hwnd)
 {
     LayoutChildren(hwnd);
+    SyncGmcpWindowsToMain();
+    SyncNumpadViewToMain();
     QueueSaveWindowSettings(hwnd);
 
     if (g_app && g_app->hwndShortcutBar)
@@ -1067,12 +1091,16 @@ bool HandleMainSize(HWND hwnd)
 bool HandleMainMove(HWND hwnd)
 {
     TrackMainWindowRect(hwnd, false);
+    SyncGmcpWindowsToMain();
+    SyncNumpadViewToMain();
     return true;
 }
 
 bool HandleMainExitSizeMove(HWND hwnd)
 {
     TrackMainWindowRect(hwnd, true);
+    SyncGmcpWindowsToMain();
+    SyncNumpadViewToMain();
     return true;
 }
 
@@ -1432,6 +1460,25 @@ bool HandleMainCommand(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 switch (LOWORD(wParam))
         {
+        case ID_LOG_COPY_CURRENT:
+        case ID_LOG_COPY_HISTORY:
+        case ID_LOG_COPY_ALL:
+        case ID_LOG_COPY_CURRENT_ANSI:
+        case ID_LOG_COPY_HISTORY_ANSI:
+        case ID_LOG_COPY_ALL_ANSI:
+        case ID_LOG_SAVE_CURRENT:
+        case ID_LOG_SAVE_HISTORY:
+        case ID_LOG_SAVE_ALL:
+        case ID_LOG_SAVE_CURRENT_ANSI:
+        case ID_LOG_SAVE_HISTORY_ANSI:
+        case ID_LOG_SAVE_ALL_ANSI:
+        case ID_LOG_CLEAR_CURRENT:
+        case ID_LOG_CLEAR_HISTORY:
+        case ID_LOG_CLEAR_ALL:
+            HandleTerminalExportCommand(hwnd, LOWORD(wParam));
+            RefocusActiveInput();
+            return true;
+
         case ID_MENU_EDIT_COPY_PAST:
             StartHistoryCopyAsync(hwnd);
             return true;
@@ -1552,6 +1599,15 @@ switch (LOWORD(wParam))
             }
             return true;
         }
+        case ID_MENU_VIEW_GMCP_MAP:
+            ShowGmcpMapWindow(hwnd);
+            return true;
+        case ID_MENU_VIEW_GMCP_INFO:
+            ShowGmcpInfoWindow(hwnd);
+            return true;
+        case ID_MENU_VIEW_NUMPAD:
+            ShowNumpadViewWindow(hwnd);
+            return true;
         case ID_MENU_VIEW_SYMBOLS:
         {
             g_app->hwndTargetEdit = GetFocus();
@@ -1642,10 +1698,18 @@ switch (LOWORD(wParam))
             return true;
         }
         case ID_MENU_FILE_ZAP:
-            // buildfix38: 주소록 세션뿐 아니라 빠른연결의 new 세션도 종료합니다.
-            ZapKnownTinTinSession();
+            // 사용자가 직접 연결 끊기를 선택한 경우에는 KTin이 세션명을
+            // 추적하지 못한 현재 세션도 인자 없는 #zap으로 종료할 수 있습니다.
+            ZapKnownTinTinSession(true);
             g_app->hasPendingQuickConnect = false;
+            g_app->pendingQuickCharsetCommand.clear();
+            g_app->pendingQuickConnectCommand.clear();
+            g_app->pendingQuickSessionName.clear();
+            g_app->hasPendingConnect = false;
+            g_app->pendingConnectSessionName.clear();
             KillWinTimer(hwnd, ID_TIMER_SWITCH_QUICK_CONNECT);
+            KillWinTimer(hwnd, ID_TIMER_SWITCH_CONNECT);
+            KillWinTimer(hwnd, ID_TIMER_AUTORECONNECT);
             g_app->isConnected = false;
 
             RefocusActiveInput();
@@ -1917,6 +1981,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_APP_VAR_UPDATE:
         HandleMainVarUpdate(hwnd, wParam, lParam);
         return 0;
+
+    case WM_APP_GMCP_UPDATE:
+        if (HandleMainGmcpUpdate(hwnd, lParam))
+            return 0;
+        break;
 
     case WM_APP_PROCESS_EXIT:
         if (HandleMainProcessExit(hwnd))

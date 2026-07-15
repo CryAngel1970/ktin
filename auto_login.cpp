@@ -132,6 +132,11 @@ static void CheckAddressBookAutoReconnectFromText(const std::wstring& text)
     if (!LooksLikeTinTinConnectionDown(text))
         return;
 
+    // 세션 전환을 위해 의도적으로 #zap한 직후의 종료 문구는
+    // 새 접속 실패가 아니므로 자동 재연결 원인으로 사용하지 않습니다.
+    if (g_app->hasPendingConnect || g_app->hasPendingQuickConnect)
+        return;
+
     g_app->isConnected = false;
     SetSessionActiveState(g_app->hwndMain, false);
     g_app->lastConnectionDownTick = GetTickCount();

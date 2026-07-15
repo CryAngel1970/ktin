@@ -168,6 +168,96 @@ namespace
             row.appendNewline);
     }
 
+    bool SameTerminalStyle(const TerminalCell& a, const TerminalCell& b)
+    {
+        return a.fg == b.fg && a.bg == b.bg && a.bold == b.bold;
+    }
+
+    void AppendAnsiStyle(std::wstring& out, const TerminalCell& cell)
+    {
+        out += L"\x1b[0";
+        if (cell.bold)
+            out += L";1";
+        out += L";38;2;" + std::to_wstring(GetRValue(cell.fg));
+        out += L";" + std::to_wstring(GetGValue(cell.fg));
+        out += L";" + std::to_wstring(GetBValue(cell.fg));
+        out += L";48;2;" + std::to_wstring(GetRValue(cell.bg));
+        out += L";" + std::to_wstring(GetGValue(cell.bg));
+        out += L";" + std::to_wstring(GetBValue(cell.bg));
+        out += L"m";
+    }
+
+    void AppendAnsiCellRange(std::wstring& out, const TerminalCell* row, int rowSize,
+                             int startX, int endX, bool appendNewline,
+                             COLORREF defaultFg, COLORREF defaultBg)
+    {
+        if (!row || rowSize <= 0)
+        {
+            if (appendNewline)
+                out += L"\r\n";
+            return;
+        }
+
+        startX = ClampInt(startX, 0, rowSize - 1);
+        endX = ClampInt(endX, 0, rowSize - 1);
+        if (startX > endX)
+        {
+            if (appendNewline)
+                out += L"\r\n";
+            return;
+        }
+
+        int last = -1;
+        for (int x = endX; x >= startX; --x)
+        {
+            const TerminalCell& c = row[x];
+            if (c.isWideTrailer)
+                continue;
+            if (c.ch != L' ' || c.fg != defaultFg || c.bg != defaultBg || c.bold)
+            {
+                last = x;
+                break;
+            }
+        }
+
+        bool styleValid = false;
+        TerminalCell activeStyle{};
+        if (last >= startX)
+        {
+            for (int x = startX; x <= last; ++x)
+            {
+                const TerminalCell& c = row[x];
+                if (c.isWideTrailer)
+                    continue;
+                if (!styleValid || !SameTerminalStyle(activeStyle, c))
+                {
+                    AppendAnsiStyle(out, c);
+                    activeStyle = c;
+                    styleValid = true;
+                }
+                out.push_back(c.ch);
+            }
+        }
+
+        if (styleValid)
+            out += L"\x1b[0m";
+        if (appendNewline)
+            out += L"\r\n";
+    }
+
+    void AppendAnsiCopiedRow(std::wstring& out, const TerminalTextRowCopy& row,
+                             COLORREF defaultFg, COLORREF defaultBg)
+    {
+        AppendAnsiCellRange(out,
+            row.cells.empty() ? nullptr : row.cells.data(),
+            static_cast<int>(row.cells.size()),
+            row.startX,
+            row.endX,
+            row.appendNewline,
+            defaultFg,
+            defaultBg);
+    }
+
     bool IsTerminalWordBreak(wchar_t ch)
     {
         return ch <= L' ' || wcschr(L",.:;!?\"'()[]{}<>=+*|", ch) != nullptr;
@@ -379,6 +469,35 @@ void TerminalBuffer::AppendText(std::wstring_view text, COLORREF fg, COLORREF bg
 
 void TerminalBuffer::PutCharUnlocked(wchar_t ch, COLORREF fg, COLORREF bg, bool bold)
 {
+    /*
+     * 모호한 동아시아 문자를 2칸으로 표시할 때 ConPTY가 한 줄 끝을
+     * ASCII 공백으로 채워 보내면, KTin 쪽 계산 폭만 더 길어져 마지막
+     * 채움 공백이 다음 행으로 자동 줄바꿈될 수 있습니다. 그 행에는
+     * 공백만 있으므로 화면에서는 전각 문자가 있는 모든 줄 뒤에 빈 행이
+     * 하나씩 생긴 것처럼 보입니다.
+     *
+     * 현재 행에 2칸 문자가 있고 이미 오른쪽 끝 자동 줄바꿈 대기 상태라면
+     * 뒤따르는 ASCII 공백은 줄 끝 채움으로 간주합니다. CR/LF가 오면
+     * 어차피 커서가 다음 줄로 이동하므로 이 공백을 버려도 표시 내용은
+     * 달라지지 않으며, 실제 문자가 이어지면 그 문자가 정상적으로 다음
+     * 줄에서 출력됩니다.
+     */
+    if (ch == L' ' && pendingWrap && g_app && g_app->ambiguousEastAsianWide)
+    {
+        bool rowHasWideCell = false;
+        for (int x = 0; x < width; ++x)
+        {
+            if (GetCell(x, cursorY).isWideTrailer)
+            {
+                rowHasWideCell = true;
+                break;
+            }
+        }
+
+        if (rowHasWideCell)
+            return;
+    }
+
     if (ch == L'\r') { cursorX = 0; pendingWrap = false; return; }
     if (ch == L'\n') {
         cursorY++;
@@ -583,6 +702,15 @@ void TerminalBuffer::ClearLog(bool clearAllBuffer)
     MarkAllDirtyUnlocked();
 }
 
+void TerminalBuffer::ClearHistory()
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    history.clear();
+    scrollOffset = 0;
+    hasSelection = false;
+    MarkAllDirtyUnlocked();
+}
+
 void ClearLogWindow(bool clearAllBuffer)
 {
     if (!g_app || !g_app->termBuffer) return;
@@ -737,6 +865,12 @@ bool TerminalBuffer::IsSelectedUnlocked(int x, int absY) const
     return true;
 }
 
+bool TerminalBuffer::HasSelection()
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    return hasSelection;
+}
+
 std::wstring TerminalBuffer::GetSelectedText()
 {
     std::vector<TerminalTextRowCopy> rows;
@@ -808,6 +942,82 @@ std::wstring TerminalBuffer::GetSelectedText()
         AppendTrimmedCopiedRow(res, row);
     return res;
 }
+
+std::wstring TerminalBuffer::GetSelectedAnsiText()
+{
+    std::vector<TerminalTextRowCopy> rows;
+    size_t reserveChars = 0;
+    COLORREF copiedDefaultFg = RGB(220, 220, 220);
+    COLORREF copiedDefaultBg = RGB(0, 0, 0);
+
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!hasSelection || width <= 0 || height <= 0)
+            return L"";
+
+        int sy1 = selStartY, sx1 = selStartX, sy2 = selEndY, sx2 = selEndX;
+        if (sy1 > sy2 || (sy1 == sy2 && sx1 > sx2))
+        {
+            std::swap(sy1, sy2);
+            std::swap(sx1, sx2);
+        }
+
+        sx1 = ClampInt(sx1, 0, width - 1);
+        sx2 = ClampInt(sx2, 0, width - 1);
+        const int histRows = static_cast<int>(history.size());
+        const int maxAbsRow = histRows + height;
+        if (sy2 < 0 || sy1 >= maxAbsRow)
+            return L"";
+
+        sy1 = ClampInt(sy1, 0, maxAbsRow - 1);
+        sy2 = ClampInt(sy2, 0, maxAbsRow - 1);
+        const int selectedRows = sy2 - sy1 + 1;
+        rows.reserve(selectedRows > 0 ? static_cast<size_t>(selectedRows) : 0);
+        reserveChars = static_cast<size_t>(selectedRows) * static_cast<size_t>((width * 2) + 64);
+        copiedDefaultFg = defaultFg;
+        copiedDefaultBg = defaultBg;
+
+        const TerminalCell blank{ L' ', defaultFg, defaultBg, false, false };
+        for (int y = sy1; y <= sy2; ++y)
+        {
+            TerminalTextRowCopy rowCopy;
+            rowCopy.startX = (y == sy1) ? sx1 : 0;
+            rowCopy.endX = (y == sy2) ? sx2 : width - 1;
+            rowCopy.appendNewline = (y < sy2);
+            rowCopy.cells.assign(static_cast<size_t>(width), blank);
+
+            if (y < histRows)
+            {
+                const auto& row = history[static_cast<size_t>(y)];
+                const size_t count = std::min(static_cast<size_t>(width), row.size());
+                if (count > 0)
+                    std::copy_n(row.data(), count, rowCopy.cells.data());
+            }
+            else
+            {
+                const int liveY = y - histRows;
+                if (liveY >= 0 && liveY < height)
+                {
+                    const size_t base = RowBase(liveY);
+                    if (base < cells.size())
+                    {
+                        const size_t count = std::min(static_cast<size_t>(width), cells.size() - base);
+                        if (count > 0)
+                            std::copy_n(cells.data() + base, count, rowCopy.cells.data());
+                    }
+                }
+            }
+            rows.push_back(std::move(rowCopy));
+        }
+    }
+
+    std::wstring res;
+    res.reserve(reserveChars);
+    for (const auto& row : rows)
+        AppendAnsiCopiedRow(res, row, copiedDefaultFg, copiedDefaultBg);
+    return res;
+}
+
 std::wstring TerminalBuffer::GetWordAt(int x, int absY)
 {
     return RowWordAtColumn(MakeRowTextSnapshot(absY, false), x);
@@ -856,6 +1066,48 @@ std::wstring TerminalBuffer::GetCurrentScreenText()
     return res;
 }
 
+std::wstring TerminalBuffer::GetCurrentScreenAnsiText()
+{
+    std::vector<TerminalTextRowCopy> rows;
+    size_t reserveChars = 0;
+    COLORREF copiedDefaultFg = RGB(220, 220, 220);
+    COLORREF copiedDefaultBg = RGB(0, 0, 0);
+
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (width <= 0 || height <= 0)
+            return L"";
+
+        reserveChars = static_cast<size_t>(height) * static_cast<size_t>((width * 2) + 64);
+        rows.reserve(static_cast<size_t>(height));
+        copiedDefaultFg = defaultFg;
+        copiedDefaultBg = defaultBg;
+        const TerminalCell blank{ L' ', defaultFg, defaultBg, false, false };
+        for (int y = 0; y < height; ++y)
+        {
+            TerminalTextRowCopy rowCopy;
+            rowCopy.startX = 0;
+            rowCopy.endX = width - 1;
+            rowCopy.appendNewline = true;
+            rowCopy.cells.assign(static_cast<size_t>(width), blank);
+            const size_t base = RowBase(y);
+            if (base < cells.size())
+            {
+                const size_t count = std::min(static_cast<size_t>(width), cells.size() - base);
+                if (count > 0)
+                    std::copy_n(cells.data() + base, count, rowCopy.cells.data());
+            }
+            rows.push_back(std::move(rowCopy));
+        }
+    }
+
+    std::wstring res;
+    res.reserve(reserveChars);
+    for (const auto& row : rows)
+        AppendAnsiCopiedRow(res, row, copiedDefaultFg, copiedDefaultBg);
+    return res;
+}
+
 std::wstring TerminalBuffer::GetHistoryText()
 {
     std::vector<TerminalTextRowCopy> rows;
@@ -883,6 +1135,49 @@ std::wstring TerminalBuffer::GetHistoryText()
         AppendTrimmedCopiedRow(res, row);
     return res;
 }
+
+std::wstring TerminalBuffer::GetHistoryAnsiText()
+{
+    std::vector<TerminalTextRowCopy> rows;
+    size_t reserveChars = 0;
+    COLORREF copiedDefaultFg = RGB(220, 220, 220);
+    COLORREF copiedDefaultBg = RGB(0, 0, 0);
+
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        const size_t avgWidth = width > 0 ? static_cast<size_t>((width * 2) + 64) : 64;
+        reserveChars = history.size() * avgWidth;
+        rows.reserve(history.size());
+        copiedDefaultFg = defaultFg;
+        copiedDefaultBg = defaultBg;
+        for (const auto& row : history)
+        {
+            TerminalTextRowCopy rowCopy;
+            rowCopy.startX = 0;
+            rowCopy.endX = static_cast<int>(row.size()) - 1;
+            rowCopy.appendNewline = true;
+            rowCopy.cells = row;
+            rows.push_back(std::move(rowCopy));
+        }
+    }
+
+    std::wstring res;
+    res.reserve(reserveChars);
+    for (const auto& row : rows)
+        AppendAnsiCopiedRow(res, row, copiedDefaultFg, copiedDefaultBg);
+    return res;
+}
+
+std::wstring TerminalBuffer::GetAllScreenText()
+{
+    return GetHistoryText() + GetCurrentScreenText();
+}
+
+std::wstring TerminalBuffer::GetAllScreenAnsiText()
+{
+    return GetHistoryAnsiText() + GetCurrentScreenAnsiText();
+}
+
 size_t TerminalBuffer::RowBase(int y) const
 {
     if (width <= 0 || height <= 0 || y < 0 || y >= height)

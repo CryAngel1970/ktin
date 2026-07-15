@@ -254,13 +254,14 @@ void CreateMainMenu(HWND hwnd)
 
     UniqueMenu hMenuPast(CreatePopupMenu());
     UniqueMenu hMenuCur(CreatePopupMenu());
+    UniqueMenu hMenuAll(CreatePopupMenu());
     UniqueMenu hMenuCapture(CreatePopupMenu());
     UniqueMenu hMenuTail(CreatePopupMenu());
 
     if (!hMenuBar.IsValid() || !hMenuFile.IsValid() || !hMenuEdit.IsValid() ||
         !hMenuView.IsValid() || !hMenuOptions.IsValid() || !hMenuHelp.IsValid() ||
-        !hMenuPast.IsValid() || !hMenuCur.IsValid() || !hMenuCapture.IsValid() ||
-        !hMenuTail.IsValid())
+        !hMenuPast.IsValid() || !hMenuCur.IsValid() || !hMenuAll.IsValid() ||
+        !hMenuCapture.IsValid() || !hMenuTail.IsValid())
         return;
 
     auto AddODItem = [](HMENU hMenu, UINT_PTR id, const wchar_t* text)
@@ -283,11 +284,26 @@ void CreateMainMenu(HWND hwnd)
     AppendMenuW(hMenuFile.Get(), MF_SEPARATOR, 0, nullptr);
     AddODItem(hMenuFile.Get(), ID_MENU_EXIT, L"끝내기\tAlt+X");
 
-    AddODItem(hMenuPast.Get(), ID_MENU_EDIT_COPY_PAST, L"클립보드로 복사");
-    AddODItem(hMenuPast.Get(), ID_MENU_EDIT_SAVE_PAST, L"파일로 저장...");
+    AddODItem(hMenuPast.Get(), ID_LOG_COPY_HISTORY, L"클립보드로 복사");
+    AddODItem(hMenuPast.Get(), ID_LOG_SAVE_HISTORY, L"파일로 저장...");
+    AddODItem(hMenuPast.Get(), ID_LOG_COPY_HISTORY_ANSI, L"코드로 클립보드 복사");
+    AddODItem(hMenuPast.Get(), ID_LOG_SAVE_HISTORY_ANSI, L"코드로 파일 저장...");
+    AppendMenuW(hMenuPast.Get(), MF_SEPARATOR, 0, nullptr);
+    AddODItem(hMenuPast.Get(), ID_LOG_CLEAR_HISTORY, L"지우기");
 
-    AddODItem(hMenuCur.Get(), ID_MENU_EDIT_COPY_CUR, L"클립보드로 복사");
-    AddODItem(hMenuCur.Get(), ID_MENU_EDIT_SAVE_CUR, L"파일로 저장...");
+    AddODItem(hMenuCur.Get(), ID_LOG_COPY_CURRENT, L"클립보드로 복사");
+    AddODItem(hMenuCur.Get(), ID_LOG_SAVE_CURRENT, L"파일로 저장...");
+    AddODItem(hMenuCur.Get(), ID_LOG_COPY_CURRENT_ANSI, L"코드로 클립보드 복사");
+    AddODItem(hMenuCur.Get(), ID_LOG_SAVE_CURRENT_ANSI, L"코드로 파일 저장...");
+    AppendMenuW(hMenuCur.Get(), MF_SEPARATOR, 0, nullptr);
+    AddODItem(hMenuCur.Get(), ID_LOG_CLEAR_CURRENT, L"지우기");
+
+    AddODItem(hMenuAll.Get(), ID_LOG_COPY_ALL, L"클립보드로 복사");
+    AddODItem(hMenuAll.Get(), ID_LOG_SAVE_ALL, L"파일로 저장...");
+    AddODItem(hMenuAll.Get(), ID_LOG_COPY_ALL_ANSI, L"코드로 클립보드 복사");
+    AddODItem(hMenuAll.Get(), ID_LOG_SAVE_ALL_ANSI, L"코드로 파일 저장...");
+    AppendMenuW(hMenuAll.Get(), MF_SEPARATOR, 0, nullptr);
+    AddODItem(hMenuAll.Get(), ID_LOG_CLEAR_ALL, L"지우기");
 
     AddODItem(hMenuTail.Get(), ID_MENU_CAPTURE_TAIL_ALL, L"전체");
     AddODItem(hMenuTail.Get(), ID_MENU_CAPTURE_TAIL_CHAT, L"잡담");
@@ -315,6 +331,7 @@ void CreateMainMenu(HWND hwnd)
     AppendMenuW(hMenuEdit.Get(), MF_SEPARATOR, 0, nullptr);
     AddODPopup(hMenuEdit.Get(), hMenuPast, L"지난 화면을");
     AddODPopup(hMenuEdit.Get(), hMenuCur, L"현재 화면을");
+    AddODPopup(hMenuEdit.Get(), hMenuAll, L"전체 화면을");
 
     AddODItem(hMenuView.Get(), ID_MENU_VIEW_HIDE_MENU, L"메뉴 숨기기(&M)");
     AddODPopup(hMenuView.Get(), hMenuCapture, L"갈무리(&L)");
@@ -322,6 +339,10 @@ void CreateMainMenu(HWND hwnd)
     AddODItem(hMenuView.Get(), ID_MENU_CAPTURE_FILTER_SETTINGS, L"갈무리 필터 설정...");
     AddODItem(hMenuView.Get(), ID_MENU_THEME_DIALOG, L"ANSI 테마 선택...(&T)");
     AddODItem(hMenuView.Get(), ID_MENU_OPTIONS_FIT_WINDOW, L"화면 여백 없애기(&S)");
+    AppendMenuW(hMenuView.Get(), MF_SEPARATOR, 0, nullptr);
+    AddODItem(hMenuView.Get(), ID_MENU_VIEW_GMCP_MAP, L"GMCP 지도 보기");
+    AddODItem(hMenuView.Get(), ID_MENU_VIEW_GMCP_INFO, L"GMCP 정보 보기");
+    AddODItem(hMenuView.Get(), ID_MENU_VIEW_NUMPAD, L"키패드 보기");
     AppendMenuW(hMenuView.Get(), MF_SEPARATOR, 0, nullptr);
     AddODItem(hMenuView.Get(), ID_MENU_VIEW_SYMBOLS, L"특수 기호...(&S)\tF4");
 

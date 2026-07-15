@@ -45,6 +45,7 @@ using std::max;
 #define WM_APP_START_BACKEND        (WM_APP + 5)
 #define WM_APP_HISTORY_EXPORT_DONE  (WM_APP + 6)
 #define WM_APP_THEME_RECOLOR_DONE   (WM_APP + 7)
+#define WM_APP_GMCP_UPDATE          (WM_APP + 8)
 
 #ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
 #define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 0x00020016
@@ -94,8 +95,30 @@ static const int ID_MENU_OPTIONS_CHAT_CAPTURE = 1024;
 static const int ID_MENU_OPTIONS_CHAT_TOGGLE_VISIBLE = 1025;
 static const int ID_MENU_FILE_NEW_WINDOW = 1026;
 
-static const int ID_LOG_COPY = 1101;
+static const int ID_LOG_COPY = 1101;                  // 선택블럭 일반 복사
 static const int ID_LOG_CLEAR_CHAT = 1102;
+static const int ID_LOG_SAVE_SELECTION = 1103;         // 선택블럭 일반 파일 저장
+static const int ID_LOG_CLOSE_SELECTION = 1104;
+static const int ID_LOG_COPY_SELECTION_ANSI = 1105;
+static const int ID_LOG_SAVE_SELECTION_ANSI = 1106;
+
+static const int ID_LOG_COPY_CURRENT = 1110;
+static const int ID_LOG_COPY_HISTORY = 1111;
+static const int ID_LOG_COPY_ALL = 1112;
+static const int ID_LOG_COPY_CURRENT_ANSI = 1113;
+static const int ID_LOG_COPY_HISTORY_ANSI = 1114;
+static const int ID_LOG_COPY_ALL_ANSI = 1115;
+
+static const int ID_LOG_SAVE_CURRENT = 1120;
+static const int ID_LOG_SAVE_HISTORY = 1121;
+static const int ID_LOG_SAVE_ALL = 1122;
+static const int ID_LOG_SAVE_CURRENT_ANSI = 1123;
+static const int ID_LOG_SAVE_HISTORY_ANSI = 1124;
+static const int ID_LOG_SAVE_ALL_ANSI = 1125;
+
+static const int ID_LOG_CLEAR_CURRENT = 1130;
+static const int ID_LOG_CLEAR_HISTORY = 1131;
+static const int ID_LOG_CLEAR_ALL = 1132;
 static const int ID_TIMER_SESSION_UPTIME = 2000;
 static const int ID_TIMER_DEFER_SAVE = 2001;
 static const int ID_TIMER_KEEPALIVE = 2002;
@@ -163,6 +186,9 @@ static const int ID_MENU_VIEW_HIDE_MENU = 4603;
 static const int ID_LOG_SHOW_MENU = 4604;
 static const int ID_MENU_THEME_DIALOG = 4605;
 static const int ID_MENU_VIEW_SYMBOLS = 4606;
+static const int ID_MENU_VIEW_GMCP_MAP = 4607;
+static const int ID_MENU_VIEW_GMCP_INFO = 4608;
+static const int ID_MENU_VIEW_NUMPAD = 4609;
 
 static const int ID_THEME_WINDOWS = 4701;
 static const int ID_THEME_XTERM = 4702;
@@ -356,6 +382,26 @@ static const int ID_SET_CHK_BACKSPACE_LIMIT = 5406;
 static const int ID_SET_CHK_CLOSE_TRAY = 5407;
 static const int ID_SET_CHK_SOUND_ENABLE = 5408;
 static const int ID_SET_CHK_AMBIGUOUS_WIDE = 5409;
+static const int ID_SET_COMBO_SELECTION_ACTION = 5410;
+
+// GMCP 정보창에 표시할 모듈 선택
+enum GmcpModuleDisplayIndex
+{
+    GMCP_DISPLAY_MAP = 0,
+    GMCP_DISPLAY_VITALS,
+    GMCP_DISPLAY_CURSOR,
+    GMCP_DISPLAY_CHAR,
+    GMCP_DISPLAY_COMBAT,
+    GMCP_DISPLAY_PARTY,
+    GMCP_DISPLAY_ROOM,
+    GMCP_DISPLAY_SYSTEM,
+    GMCP_DISPLAY_INFO,
+    GMCP_DISPLAY_CHAT,
+    GMCP_DISPLAY_TERM,
+    GMCP_DISPLAY_OTHER,
+    GMCP_DISPLAY_COUNT
+};
+static const int ID_SET_GMCP_MODULE_BASE = 5700;
 
 static const int ID_SET_EDIT_SHORTCUT_BASE = 5500;
 static const int ID_SET_EDIT_SCLABEL_BASE = 5600;
@@ -430,6 +476,9 @@ static const int ID_ABBR_GLOBAL_ENABLE = 9508;
 #define ID_NP_EDIT_CMD 10102
 #define ID_NP_BTN_SAVE_CMD 10103
 #define ID_NP_BTN_BASE 10200
+#define ID_NP_VIEW_BTN_BASE 10300
+#define ID_NP_VIEW_NUMLOCK 10320
+#define ID_NP_VIEW_ENTER 10321
 
 // --- 타이머 UI 컨트롤 ID ---
 #define ID_TIMER_LIST        12000

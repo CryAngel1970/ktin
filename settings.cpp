@@ -8,6 +8,7 @@
 #include "memo.h"
 #include "resource.h"
 #include "chat_capture.h"
+#include "gmcp.h"
 #include "win_util.h"
 #include <commctrl.h>
 
@@ -182,7 +183,7 @@ void UpdateSettingPreviews(HWND hwnd) {
 
 void SwitchSettingsPane(SettingsDlgState* state, int index) {
     if (!state) return;
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         int show = (i == index) ? SW_SHOW : SW_HIDE;
         if (state->hwndGroups[i]) ShowWindow(state->hwndGroups[i], show);
         for (HWND h : state->panelCtrls[i]) ShowWindow(h, show);
@@ -227,19 +228,19 @@ static LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
         HINSTANCE hInst = GetModuleHandleW(nullptr);
 
         auto AddToPanel = [&](int p, HWND h) { if (h) state->panelCtrls[p].push_back(h); };
-        const wchar_t* categories[] = { L"일반 설정", L"폰트 및 색상", L"접속 유지", L"기타 설정", L"단축버튼" };
+        const wchar_t* categories[] = { L"일반 설정", L"폰트 및 색상", L"접속 유지", L"기타 설정", L"단축버튼", L"GMCP" };
 
         state->hwndList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
             WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
             12, 12, 140, 475, hwnd, (HMENU)(INT_PTR)ID_SETTING_LIST, hInst, nullptr);
 
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 6; ++i)
             SendMessageW(state->hwndList, LB_ADDSTRING, 0, (LPARAM)categories[i]);
 
         SendMessageW(state->hwndList, LB_SETITEMHEIGHT, 0, 26);
         SendMessageW(state->hwndList, LB_SETCURSEL, 0, 0);
 
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             state->hwndGroups[i] = CreateWindowExW(0, L"BUTTON", categories[i], WS_CHILD | BS_GROUPBOX, 165, 5, 410, 482, hwnd, nullptr, hInst, nullptr);
         }
 
@@ -360,6 +361,23 @@ static LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
         HWND hChkTailSnap = CreateWindowExW(0, L"BUTTON", L"갈무리창 자동 붙기", WS_CHILD | BS_AUTOCHECKBOX, 185, 340, 300, 24, hwnd, (HMENU)(INT_PTR)ID_SET_CHK_TAIL_SNAP, hInst, nullptr);
         AddToPanel(3, hChkTailSnap);
 
+        AddToPanel(3, CreateWindowExW(0, L"STATIC", L"블럭 설정 후:", WS_CHILD, 185, 379, 105, 20, hwnd, nullptr, hInst, nullptr));
+        HWND hSelectionAction = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
+            WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            292, 374, 250, 160, hwnd, (HMENU)(INT_PTR)ID_SET_COMBO_SELECTION_ACTION, hInst, nullptr);
+        AddToPanel(3, hSelectionAction);
+        SendMessageW(hSelectionAction, CB_ADDSTRING, 0, (LPARAM)L"반전선택 클립보드");
+        SendMessageW(hSelectionAction, CB_ADDSTRING, 0, (LPARAM)L"반전선택 코드로 클립보드");
+        SendMessageW(hSelectionAction, CB_ADDSTRING, 0, (LPARAM)L"반전선택 파일저장");
+        SendMessageW(hSelectionAction, CB_ADDSTRING, 0, (LPARAM)L"반전선택 코드로 파일저장");
+        SendMessageW(hSelectionAction, CB_ADDSTRING, 0, (LPARAM)L"선택메뉴 띄우기");
+        SendMessageW(hSelectionAction, CB_SETCURSEL,
+            (g_app->selectionAfterDragMode >= 0 && g_app->selectionAfterDragMode <= 4)
+                ? g_app->selectionAfterDragMode : 4, 0);
+        AddToPanel(3, CreateWindowExW(0, L"STATIC",
+            L"※ 마우스 왼쪽 드래그를 놓은 직후 실행됩니다.",
+            WS_CHILD, 185, 410, 360, 20, hwnd, nullptr, hInst, nullptr));
+
         // --- 패널 4: 단축버튼 ---
         AddToPanel(4, CreateWindowExW(0, L"STATIC", L"라벨", WS_CHILD, 210, 30, 70, 20, hwnd, nullptr, hInst, nullptr));
         AddToPanel(4, CreateWindowExW(0, L"STATIC", L"켜기(ON) 명령", WS_CHILD, 285, 30, 100, 20, hwnd, nullptr, hInst, nullptr));
@@ -382,6 +400,53 @@ static LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
         AddToPanel(4, CreateWindowExW(0, L"STATIC", L"토글이 체크된 버튼은 ON / OFF 명령을 각각 전송합니다.", WS_CHILD, 210, 402, 360, 18, hwnd, nullptr, hInst, nullptr));
         AddToPanel(4, CreateWindowExW(0, L"STATIC", L"라벨은 자유롭게 입력할 수 있으며, 번호를 함께 적으면", WS_CHILD, 210, 424, 360, 18, hwnd, nullptr, hInst, nullptr));
         AddToPanel(4, CreateWindowExW(0, L"STATIC", L"구분하기 쉽습니다.", WS_CHILD, 210, 446, 360, 18, hwnd, nullptr, hInst, nullptr));
+
+        // --- 패널 5: GMCP ---
+        AddToPanel(5, CreateWindowExW(0, L"STATIC",
+            L"GMCP 정보창에 원본 내용을 표시할 모듈", WS_CHILD,
+            185, 32, 360, 22, hwnd, nullptr, hInst, nullptr));
+        AddToPanel(5, CreateWindowExW(0, L"STATIC",
+            L"※ 체력/정신력 막대는 Vitals 또는 Cursor에서 항상 자동 갱신됩니다.", WS_CHILD,
+            185, 58, 375, 36, hwnd, nullptr, hInst, nullptr));
+
+        struct GmcpSettingItem
+        {
+            int index;
+            const wchar_t* label;
+        };
+        const GmcpSettingItem gmcpItems[] =
+        {
+            { GMCP_DISPLAY_VITALS, L"Vitals (체력/정신력 원본)" },
+            { GMCP_DISPLAY_CURSOR, L"Cursor (프롬프트 원본)" },
+            { GMCP_DISPLAY_CHAR, L"Char (캐릭터)" },
+            { GMCP_DISPLAY_COMBAT, L"Combat (전투)" },
+            { GMCP_DISPLAY_PARTY, L"Party (파티)" },
+            { GMCP_DISPLAY_ROOM, L"Room (방 정보)" },
+            { GMCP_DISPLAY_SYSTEM, L"System (시스템)" },
+            { GMCP_DISPLAY_INFO, L"Info (안내 정보)" },
+            { GMCP_DISPLAY_CHAT, L"Chat (대화)" },
+            { GMCP_DISPLAY_TERM, L"Term (터미널)" },
+            { GMCP_DISPLAY_OTHER, L"기타 수신 모듈" }
+        };
+        g_app->gmcpDisplayModules[GMCP_DISPLAY_MAP] = false;
+        for (size_t item = 0; item < _countof(gmcpItems); ++item)
+        {
+            int col = static_cast<int>(item) / 6;
+            int row = static_cast<int>(item) % 6;
+            int index = gmcpItems[item].index;
+            HWND check = CreateWindowExW(0, L"BUTTON", gmcpItems[item].label,
+                WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX,
+                185 + col * 200, 105 + row * 44, 195, 28, hwnd,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_GMCP_MODULE_BASE + index)),
+                hInst, nullptr);
+            AddToPanel(5, check);
+            SendMessageW(check, BM_SETCHECK,
+                g_app->gmcpDisplayModules[index] ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
+
+        AddToPanel(5, CreateWindowExW(0, L"STATIC",
+            L"선택한 모듈이 실제 수신되면 정보창에 표시되며, 긴 내용은 세로 스크롤로 확인합니다.",
+            WS_CHILD, 185, 390, 380, 44, hwnd, nullptr, hInst, nullptr));
 
         // 초기값 설정
         wchar_t b[32];
@@ -601,6 +666,21 @@ static LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             g_app->ambiguousEastAsianWide = (SendMessageW(GetDlgItem(hwnd, ID_SET_CHK_AMBIGUOUS_WIDE), BM_GETCHECK, 0, 0) == BST_CHECKED);
             g_app->mainAlwaysOnTop = (SendMessageW(GetDlgItem(hwnd, ID_SET_CHK_MAIN_TOPMOST), BM_GETCHECK, 0, 0) == BST_CHECKED);
             g_app->tailSnapEnabled = (SendMessageW(GetDlgItem(hwnd, ID_SET_CHK_TAIL_SNAP), BM_GETCHECK, 0, 0) == BST_CHECKED);
+            LRESULT selectionMode = SendMessageW(GetDlgItem(hwnd, ID_SET_COMBO_SELECTION_ACTION), CB_GETCURSEL, 0, 0);
+            g_app->selectionAfterDragMode = (selectionMode >= 0 && selectionMode <= 4)
+                ? static_cast<int>(selectionMode) : 4;
+            g_app->gmcpDisplayModules[GMCP_DISPLAY_MAP] = false;
+            for (int i = GMCP_DISPLAY_VITALS; i < GMCP_DISPLAY_COUNT; ++i)
+            {
+                HWND check = GetDlgItem(hwnd, ID_SET_GMCP_MODULE_BASE + i);
+                if (check)
+                {
+                    g_app->gmcpDisplayModules[i] =
+                        SendMessageW(check, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                }
+            }
+            SaveGmcpDisplaySettings();
+            RefreshGmcpInfoWindowContent();
             if (g_app->hwndMain)
             {
                 SetWindowPos(g_app->hwndMain, g_app->mainAlwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
@@ -1032,6 +1112,8 @@ void LoadWindowSettings(HWND hwnd)
     g_app->autoShowAddressBook = GetPrivateProfileIntW(L"startup", L"address_book", 0, path.c_str()) != 0;
     g_app->closeToTray = GetPrivateProfileIntW(L"window", L"close_to_tray", 0, path.c_str()) != 0;
 
+    LoadGmcpDisplaySettings();
+
     if (x >= 0 && y >= 0 && x > -32000 && y > -32000)
         PlaceWindowOnVisibleWorkArea(hwnd, x, y, w, h);
     else
@@ -1394,6 +1476,25 @@ void LoadGeneralSettings()
     }
     g_app->mainAlwaysOnTop = GetPrivateProfileIntW(L"Options", L"MainAlwaysOnTop", 0, path.c_str()) != 0;
     g_app->tailSnapEnabled = GetPrivateProfileIntW(L"Options", L"TailSnapEnabled", 1, path.c_str()) != 0;
+    const int selectionModeVersion = GetPrivateProfileIntW(
+        L"Options", L"SelectionAfterDragModeVersion", 1, path.c_str());
+    int storedSelectionMode = GetPrivateProfileIntW(
+        L"Options", L"SelectionAfterDragMode", 2, path.c_str());
+
+    if (selectionModeVersion < 2)
+    {
+        // 기존 0=클립보드, 1=파일저장, 2=메뉴 설정을 새 순서로 이전합니다.
+        if (storedSelectionMode == 0) storedSelectionMode = 0;
+        else if (storedSelectionMode == 1) storedSelectionMode = 2;
+        else storedSelectionMode = 4;
+        WritePrivateProfileStringW(L"Options", L"SelectionAfterDragMode",
+            std::to_wstring(storedSelectionMode).c_str(), path.c_str());
+        WritePrivateProfileStringW(L"Options", L"SelectionAfterDragModeVersion", L"2", path.c_str());
+    }
+
+    g_app->selectionAfterDragMode = storedSelectionMode;
+    if (g_app->selectionAfterDragMode < 0 || g_app->selectionAfterDragMode > 4)
+        g_app->selectionAfterDragMode = 4;
 }
 
 void SaveGeneralSettings()
@@ -1403,4 +1504,7 @@ void SaveGeneralSettings()
     WritePrivateProfileStringW(L"Options", L"sound_enabled", g_app->soundEnabled ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"Options", L"AmbiguousEastAsianWide",
         g_app->ambiguousEastAsianWide ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"Options", L"SelectionAfterDragMode",
+        std::to_wstring(g_app->selectionAfterDragMode).c_str(), path.c_str());
+    WritePrivateProfileStringW(L"Options", L"SelectionAfterDragModeVersion", L"2", path.c_str());
 }

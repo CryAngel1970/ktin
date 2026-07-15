@@ -8,11 +8,13 @@ struct NumpadDialogState {
     bool accepted = false;
 };
 
-// 함수 선언
+// 숫자 키패드 매크로 설정창
 void PromptNumpadDialog(HWND owner);
-
 LRESULT CALLBACK NumpadPopupProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-// 내부 헬퍼 함수
-
 void UpdateNumpadRightPanel(HWND hwnd, int idx);
+
+// 보기 메뉴에서 여는 접근성용 화면 키패드
+void ShowNumpadViewWindow(HWND owner);
+void CloseNumpadViewWindow();
+void RefreshNumpadViewWindow();
+void SyncNumpadViewToMain();

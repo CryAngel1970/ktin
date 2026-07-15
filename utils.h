@@ -25,6 +25,22 @@ std::wstring GetSettingsPath();
 bool SetClipboardUnicodeText(HWND hwnd, const std::wstring& text);
 void CopyToClipboard(HWND hwnd, const std::wstring& text);
 void SaveTextToFile(HWND hwnd, const std::wstring& text);
+bool SaveSelectionTextToFile(HWND hwnd, const std::wstring& text);
+
+enum class TerminalExportRange
+{
+    Current,
+    History,
+    Selection,
+    All
+};
+
+std::wstring GetTerminalExportText(TerminalExportRange range, bool withAnsi);
+bool CopyTerminalExportText(HWND hwnd, TerminalExportRange range, bool withAnsi);
+bool SaveTerminalExportText(HWND hwnd, TerminalExportRange range, bool withAnsi);
+bool ClearTerminalExportRange(TerminalExportRange range);
+bool HandleTerminalExportCommand(HWND hwnd, int commandId);
+bool IsTerminalSelectionCommand(int commandId);
 
 bool WriteAllToWinFile(HANDLE file, const void* data, size_t len);
 bool WriteBytesToFile(const std::wstring& path, const void* data, size_t len, bool append = false);
@@ -63,11 +79,13 @@ void JumpRichEditToTop(HWND hwndRich);
 void JumpRichEditToBottom(HWND hwndRich);
 void SendTextToMud(const std::wstring& text);
 void SendRawCommandToMud(const std::wstring& text);
+std::wstring CreateUniqueTinTinSessionName(const wchar_t* kind);
 void MarkKnownTinTinSession(const std::wstring& sessionName);
 void ResetKnownTinTinSession();
-bool ZapKnownTinTinSession();
+bool ZapKnownTinTinSession(bool zapCurrentWhenUnknown = false);
 void SendKeepAliveNow();
 void SendCommandToProcess(const std::wstring& line);
+void SendMultilineTextToProcess(const std::wstring& text);
 void SaveLastConnectCommand(const std::wstring& text);
 void ShowTrayIcon(HWND hwnd);
 void HideTrayIcon(HWND hwnd);

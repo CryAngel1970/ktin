@@ -9,6 +9,8 @@
 #include "input.h"
 #include "auto_login.h"
 #include "log_tail.h"
+#include "gmcp.h"
+#include "numpad.h"
 #include <commctrl.h>
 #include <algorithm>
 #include <new>
@@ -21,7 +23,7 @@
 namespace
 {
     constexpr size_t kMaxAnsiCsiParamBytes = 128;
-    constexpr size_t kMaxAnsiOscParamBytes = 8192;
+    constexpr size_t kMaxAnsiOscParamBytes = 65536;
 }
 
 // ==============================================
@@ -1096,6 +1098,12 @@ void ApplyStyles() {
     // buildfix26: 이미 열려 있는 갈무리 보기 창도 메인 출력창 폰트를 즉시 따라가게 합니다.
     ApplyTailWindowFonts();
 
+    // GMCP 지도/정보 창도 메인 출력창 폰트와 색상을 즉시 따라갑니다.
+    RefreshGmcpWindowStyles();
+
+    // 접근성용 화면 키패드도 열린 상태라면 최신 매크로와 UI 글꼴을 반영합니다.
+    RefreshNumpadViewWindow();
+
     RecalcInputMetrics();
 
     if (g_app->hwndMain)
@@ -1181,6 +1189,15 @@ void AnsiToRunsParser::HandleOsc()
             if (eq != std::string_view::npos) {
                 PostGuiVarUpdate(varData.substr(0, eq), varData.substr(eq + 1));
             }
+        }
+
+
+        // TinTin++가 서버 GMCP 패킷을 KTin에 전달하는 비공개 통로입니다.
+        // OSC 777;KTIN_GMCP;<base64>는 화면에는 출력하지 않고 UI 데이터로만 사용합니다.
+        constexpr std::string_view kGmcpPrefix = "KTIN_GMCP;";
+        if (type == "777" && payload.size() > kGmcpPrefix.size() &&
+            payload.compare(0, kGmcpPrefix.size(), kGmcpPrefix) == 0) {
+            PostGmcpPacketFromOsc(payload.substr(kGmcpPrefix.size()));
         }
     }
 

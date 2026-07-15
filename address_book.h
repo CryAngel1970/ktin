@@ -20,4 +20,4 @@ void RefreshAddressBookList(HWND hList);
 void SortAddressBook();
 
 void BeginSwitchToAddressBookEntry(const AddressBookEntry& entry);
-void ConnectAddressBookEntry(const AddressBookEntry& entry);
+void ConnectAddressBookEntry(const AddressBookEntry& entry, const std::wstring& internalSessionName = L"");

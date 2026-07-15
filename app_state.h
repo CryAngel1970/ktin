@@ -178,17 +178,19 @@ struct AppState
     AddressBookEntry activeSession; // ★ 신규 추가: 현재/마지막으로 접속에 사용한 주소록 정보
     bool hasActiveSession = false;  // ★ 신규 추가: 활성화된 주소록 정보가 있는지 여부
 
-    // buildfix38: 주소록뿐 아니라 빠른연결(#session new)도 실제 TinTin++ 세션명으로 추적합니다.
+    // 현재 창에서 실제로 만든 TinTin++ 내부 세션명을 추적합니다.
     std::wstring activeTinTinSessionName;
     bool hasActiveTinTinSession = false;
 
     // ★ 신규 추가: 주소록에서 다른 서버로 전환 접속할 때 잠시 보관할 대상
     AddressBookEntry pendingConnectEntry;
+    std::wstring pendingConnectSessionName; // 창/접속마다 고유한 내부 TinTin++ 세션명
     bool hasPendingConnect = false;
 
-    // buildfix38: 빠른연결 전환 때 기존 new 세션을 닫은 뒤 500ms 후 재접속하기 위한 보관값입니다.
+    // 빠른 연결 전환 때 기존 세션을 닫은 뒤 500ms 후 재접속하기 위한 보관값입니다.
     std::wstring pendingQuickCharsetCommand;
     std::wstring pendingQuickConnectCommand;
+    std::wstring pendingQuickSessionName; // 고정 이름(new)을 쓰지 않고 창별 고유 이름을 사용
     bool hasPendingQuickConnect = false;
 
     int statusPartCount = 1;             // 분할 개수 (1~5개)
@@ -213,6 +215,14 @@ struct AppState
     int  g_detectCharsetRetry = 0;
 
     bool ambiguousEastAsianWide = true;
+
+    // 마우스로 블럭 선택을 마친 뒤 수행할 동작입니다.
+    // 0=클립보드, 1=ANSI 클립보드, 2=파일, 3=ANSI 파일, 4=선택메뉴
+    int selectionAfterDragMode = 4;
+
+    // GMCP 정보창의 원본 모듈 표시 여부입니다.
+    // 체력/정신력 막대는 이 설정과 관계없이 Vitals/Cursor에서 항상 갱신됩니다.
+    bool gmcpDisplayModules[GMCP_DISPLAY_COUNT] = {};
 
     std::vector<TimerItem> timers;
 

@@ -278,6 +278,190 @@ void SaveTextToFile(HWND hwnd, const std::wstring& text)
     }
 }
 
+
+namespace
+{
+    bool SaveTimestampedTextToFile(HWND hwnd, const std::wstring& text, const wchar_t* emptyMessage, bool withAnsi)
+    {
+        if (text.empty())
+        {
+            MessageBoxW(hwnd, emptyMessage, L"알림", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+
+        const std::wstring saveDir = MakeAbsolutePath(GetModuleDirectory(), L"저장");
+        const DWORD attrs = GetFileAttributesW(saveDir.c_str());
+        if (attrs == INVALID_FILE_ATTRIBUTES)
+        {
+            if (!CreateDirectoryW(saveDir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+            {
+                MessageBoxW(hwnd, L"기본 저장 디렉토리를 만들 수 없습니다.", L"저장 실패", MB_OK | MB_ICONERROR);
+                return false;
+            }
+        }
+        else if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0)
+        {
+            MessageBoxW(hwnd, L"실행 폴더의 '저장' 항목이 디렉토리가 아닙니다.", L"저장 실패", MB_OK | MB_ICONERROR);
+            return false;
+        }
+
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+
+        wchar_t fileName[MAX_PATH] = {};
+        wsprintfW(fileName, L"%04u%02u%02u_%02u%02u%02u.txt",
+            static_cast<unsigned>(now.wYear),
+            static_cast<unsigned>(now.wMonth),
+            static_cast<unsigned>(now.wDay),
+            static_cast<unsigned>(now.wHour),
+            static_cast<unsigned>(now.wMinute),
+            static_cast<unsigned>(now.wSecond));
+
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = hwnd;
+        ofn.lpstrFile = fileName;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrInitialDir = saveDir.c_str();
+        ofn.lpstrFilter = L"텍스트 파일 (*.txt)\0*.txt\0모든 파일 (*.*)\0*.*\0";
+        ofn.nFilterIndex = 1;
+        ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+        ofn.lpstrDefExt = L"txt";
+
+        if (!GetSaveFileNameW(&ofn))
+            return false;
+
+        const std::string utf8 = WideToUtf8(text);
+        const bool written = withAnsi
+            ? WriteStringToFile(fileName, utf8, false)
+            : WriteUtf8BomTextFile(fileName, utf8);
+        if (!written)
+        {
+            MessageBoxW(hwnd, L"파일 저장 중 오류가 발생했습니다.", L"저장 실패", MB_OK | MB_ICONERROR);
+            return false;
+        }
+
+        return true;
+    }
+}
+
+bool SaveSelectionTextToFile(HWND hwnd, const std::wstring& text)
+{
+    return SaveTimestampedTextToFile(hwnd, text, L"저장할 선택 내용이 없습니다.", false);
+}
+
+std::wstring GetTerminalExportText(TerminalExportRange range, bool withAnsi)
+{
+    if (!g_app || !g_app->termBuffer)
+        return L"";
+
+    switch (range)
+    {
+    case TerminalExportRange::Current:
+        return withAnsi ? g_app->termBuffer->GetCurrentScreenAnsiText()
+                        : g_app->termBuffer->GetCurrentScreenText();
+    case TerminalExportRange::History:
+        return withAnsi ? g_app->termBuffer->GetHistoryAnsiText()
+                        : g_app->termBuffer->GetHistoryText();
+    case TerminalExportRange::Selection:
+        return withAnsi ? g_app->termBuffer->GetSelectedAnsiText()
+                        : g_app->termBuffer->GetSelectedText();
+    case TerminalExportRange::All:
+        return withAnsi ? g_app->termBuffer->GetAllScreenAnsiText()
+                        : g_app->termBuffer->GetAllScreenText();
+    }
+    return L"";
+}
+
+bool CopyTerminalExportText(HWND hwnd, TerminalExportRange range, bool withAnsi)
+{
+    const std::wstring text = GetTerminalExportText(range, withAnsi);
+    if (text.empty())
+    {
+        MessageBoxW(hwnd, L"복사할 내용이 없습니다.", L"알림", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (!SetClipboardUnicodeText(hwnd, text))
+    {
+        MessageBoxW(hwnd, L"클립보드에 복사하지 못했습니다.", L"복사 실패", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    return true;
+}
+
+bool SaveTerminalExportText(HWND hwnd, TerminalExportRange range, bool withAnsi)
+{
+    return SaveTimestampedTextToFile(hwnd,
+        GetTerminalExportText(range, withAnsi),
+        L"저장할 내용이 없습니다.",
+        withAnsi);
+}
+
+bool ClearTerminalExportRange(TerminalExportRange range)
+{
+    if (!g_app || !g_app->termBuffer)
+        return false;
+
+    switch (range)
+    {
+    case TerminalExportRange::Current:
+        g_app->termBuffer->ClearLog(false);
+        break;
+    case TerminalExportRange::History:
+        g_app->termBuffer->ClearHistory();
+        break;
+    case TerminalExportRange::All:
+        g_app->termBuffer->ClearLog(true);
+        break;
+    case TerminalExportRange::Selection:
+        return false;
+    }
+
+    if (g_app->hwndLog)
+        InvalidateRect(g_app->hwndLog, nullptr, FALSE);
+    return true;
+}
+
+bool IsTerminalSelectionCommand(int commandId)
+{
+    return commandId == ID_LOG_COPY ||
+           commandId == ID_LOG_SAVE_SELECTION ||
+           commandId == ID_LOG_COPY_SELECTION_ANSI ||
+           commandId == ID_LOG_SAVE_SELECTION_ANSI ||
+           commandId == ID_LOG_CLOSE_SELECTION;
+}
+
+bool HandleTerminalExportCommand(HWND hwnd, int commandId)
+{
+    switch (commandId)
+    {
+    case ID_LOG_COPY: return CopyTerminalExportText(hwnd, TerminalExportRange::Selection, false);
+    case ID_LOG_COPY_SELECTION_ANSI: return CopyTerminalExportText(hwnd, TerminalExportRange::Selection, true);
+    case ID_LOG_SAVE_SELECTION: return SaveTerminalExportText(hwnd, TerminalExportRange::Selection, false);
+    case ID_LOG_SAVE_SELECTION_ANSI: return SaveTerminalExportText(hwnd, TerminalExportRange::Selection, true);
+
+    case ID_LOG_COPY_CURRENT: return CopyTerminalExportText(hwnd, TerminalExportRange::Current, false);
+    case ID_LOG_COPY_HISTORY: return CopyTerminalExportText(hwnd, TerminalExportRange::History, false);
+    case ID_LOG_COPY_ALL: return CopyTerminalExportText(hwnd, TerminalExportRange::All, false);
+    case ID_LOG_COPY_CURRENT_ANSI: return CopyTerminalExportText(hwnd, TerminalExportRange::Current, true);
+    case ID_LOG_COPY_HISTORY_ANSI: return CopyTerminalExportText(hwnd, TerminalExportRange::History, true);
+    case ID_LOG_COPY_ALL_ANSI: return CopyTerminalExportText(hwnd, TerminalExportRange::All, true);
+
+    case ID_LOG_SAVE_CURRENT: return SaveTerminalExportText(hwnd, TerminalExportRange::Current, false);
+    case ID_LOG_SAVE_HISTORY: return SaveTerminalExportText(hwnd, TerminalExportRange::History, false);
+    case ID_LOG_SAVE_ALL: return SaveTerminalExportText(hwnd, TerminalExportRange::All, false);
+    case ID_LOG_SAVE_CURRENT_ANSI: return SaveTerminalExportText(hwnd, TerminalExportRange::Current, true);
+    case ID_LOG_SAVE_HISTORY_ANSI: return SaveTerminalExportText(hwnd, TerminalExportRange::History, true);
+    case ID_LOG_SAVE_ALL_ANSI: return SaveTerminalExportText(hwnd, TerminalExportRange::All, true);
+
+    case ID_LOG_CLEAR_CURRENT: return ClearTerminalExportRange(TerminalExportRange::Current);
+    case ID_LOG_CLEAR_HISTORY: return ClearTerminalExportRange(TerminalExportRange::History);
+    case ID_LOG_CLEAR_ALL: return ClearTerminalExportRange(TerminalExportRange::All);
+    case ID_LOG_CLOSE_SELECTION: return true;
+    }
+    return false;
+}
+
 void PlayAudioFile(const std::wstring& path)
 {
     if (path.empty()) return;
@@ -902,6 +1086,20 @@ void SendRawCommandToMud(const std::wstring& text)
     SendCommandToProcess(text);
 }
 
+std::wstring CreateUniqueTinTinSessionName(const wchar_t* kind)
+{
+    static volatile LONG serial = 0;
+
+    const wchar_t* safeKind = (kind && *kind) ? kind : L"session";
+    const DWORD pid = GetCurrentProcessId();
+    const LONG number = InterlockedIncrement(&serial);
+
+    wchar_t name[128] = {};
+    wsprintfW(name, L"ktin_%s_%lu_%ld", safeKind,
+        static_cast<unsigned long>(pid), static_cast<long>(number));
+    return name;
+}
+
 void MarkKnownTinTinSession(const std::wstring& sessionName)
 {
     if (!g_app) return;
@@ -923,7 +1121,7 @@ void ResetKnownTinTinSession()
     SetSessionActiveState(g_app->hwndMain, false);
 }
 
-bool ZapKnownTinTinSession()
+bool ZapKnownTinTinSession(bool zapCurrentWhenUnknown)
 {
     if (!g_app) return false;
 
@@ -932,13 +1130,20 @@ bool ZapKnownTinTinSession()
     if (g_app->hasActiveTinTinSession)
         sessionName = Trim(g_app->activeTinTinSessionName);
 
-    if (sessionName.empty() && g_app->hasActiveSession)
-        sessionName = Trim(g_app->activeSession.name);
+    // 자동 전환 중에는 KTin이 직접 만든 세션명만 종료합니다.
+    // 추적 중인 세션이 없는 시작 상태에서 인자 없는 #zap을 보내면
+    // TinTin++의 기본 세션 자체가 종료되어 프로그램이 끝날 수 있습니다.
+    if (sessionName.empty()) {
+        if (!zapCurrentWhenUnknown)
+            return false;
 
-    if (sessionName.empty())
-        return false;
-
-    SendRawCommandToMud(L"#zap {" + sessionName + L"}");
+        // 사용자가 파일 -> 연결 끊기를 직접 선택한 경우에만
+        // 이름을 모르는 현재 세션을 종료할 수 있도록 허용합니다.
+        SendRawCommandToMud(L"#zap");
+    }
+    else {
+        SendRawCommandToMud(L"#zap {" + sessionName + L"}");
+    }
 
     g_app->activeTinTinSessionName.clear();
     g_app->hasActiveTinTinSession = false;
@@ -1302,6 +1507,67 @@ void SendCommandToProcess(const std::wstring& line)
     {
         DWORD err = GetLastError();
         wsprintfW(dbg, L"[SEND] WriteFile error=%lu\r\n", (unsigned long)err);
+        OutputDebugStringW(dbg);
+    }
+}
+
+void SendMultilineTextToProcess(const std::wstring& text)
+{
+    if (!g_app || !g_app->proc.stdinWrite || text.empty())
+        return;
+
+    // 여러 행 붙여넣기는 KTin 입력창의 단일 행 제한을 거치지 않는다.
+    // Windows/Unix/Mac 줄바꿈을 ConPTY가 Enter로 인식하는 CR로 통일한다.
+    std::wstring sendText;
+    sendText.reserve(text.size() + 1);
+
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        const wchar_t ch = text[i];
+
+        if (ch == L'\r')
+        {
+            sendText.push_back(L'\r');
+            if (i + 1 < text.size() && text[i + 1] == L'\n')
+                ++i;
+        }
+        else if (ch == L'\n')
+        {
+            sendText.push_back(L'\r');
+        }
+        else if (ch != L'\0')
+        {
+            sendText.push_back(ch);
+        }
+    }
+
+    if (sendText.empty())
+        return;
+
+    // 클립보드 마지막 줄에 개행이 없어도 그 줄까지 즉시 전송한다.
+    if (sendText.back() != L'\r')
+        sendText.push_back(L'\r');
+
+    ReturnTerminalViewToLive();
+
+    if (!g_app->isConnected && g_app->soundEnabled)
+        MessageBeep(MB_ICONWARNING);
+
+    const std::string utf8 = WideToUtf8(sendText);
+    const bool ok = WriteAllToWinFile(g_app->proc.stdinWrite, utf8.data(), utf8.size());
+
+    wchar_t dbg[256];
+    wsprintfW(dbg, L"[PASTE] ok=%d size=%lu textlen=%zu\r\n",
+        ok ? 1 : 0,
+        static_cast<unsigned long>(utf8.size()),
+        sendText.size());
+    OutputDebugStringW(dbg);
+
+    if (!ok)
+    {
+        const DWORD err = GetLastError();
+        wsprintfW(dbg, L"[PASTE] WriteFile error=%lu\r\n",
+            static_cast<unsigned long>(err));
         OutputDebugStringW(dbg);
     }
 }

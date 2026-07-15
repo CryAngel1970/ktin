@@ -71,12 +71,25 @@ std::wstring GetShortcutName(int vk, int mod)
     return s;
 }
 
+std::wstring GetReservedShortcutDescription(int vk, int mod)
+{
+    if (mod == SCMOD_NONE && vk == VK_F4)
+        return L"특수기호";
+    if (mod == SCMOD_CTRL && vk == VK_F9)
+        return L"연결 끊기";
+    return L"프로그램 기능";
+}
+
 std::wstring GetShortcutListText(const ShortcutKeyBinding& sc)
 {
     std::wstring s = GetShortcutName(sc.vk, sc.mod);
 
     if (sc.reserved)
-        s += L" (예약됨)";
+    {
+        s += L" [할당됨: ";
+        s += GetReservedShortcutDescription(sc.vk, sc.mod);
+        s += L"]";
+    }
     else if (sc.enabled && sc.command[0])
         s += L" [사용중]";
 
@@ -142,7 +155,9 @@ void InitShortcutBindings()
         {
             g_shortcuts[idx].vk = VK_F1 + (f - 1);
             g_shortcuts[idx].mod = mod;
-            g_shortcuts[idx].reserved = (mod == SCMOD_NONE && f == 4);
+            g_shortcuts[idx].reserved =
+                (mod == SCMOD_NONE && f == 4) ||
+                (mod == SCMOD_CTRL && f == 9);
             g_shortcuts[idx].enabled = false;
             g_shortcuts[idx].command[0] = 0;
             ++idx;
@@ -537,8 +552,11 @@ LRESULT CALLBACK ShortcutDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 SendMessageW(hCheck, BM_SETCHECK, sc->enabled ? BST_CHECKED : BST_UNCHECKED, 0);
                 if (sc->reserved)
                 {
-                    SetWindowTextW(hStaticTitle, L"예약 키:");
-                    SetWindowTextW(hEdit, L"F4 는 특수기호 창으로 예약됨");
+                    SetWindowTextW(hStaticTitle, L"할당된 기능:");
+                    std::wstring assigned = GetShortcutName(sc->vk, sc->mod);
+                    assigned += L" - ";
+                    assigned += GetReservedShortcutDescription(sc->vk, sc->mod);
+                    SetWindowTextW(hEdit, assigned.c_str());
                     EnableWindow(hEdit, FALSE);
                     EnableWindow(hCheck, FALSE);
                     EnableWindow(hBtnSave, FALSE);

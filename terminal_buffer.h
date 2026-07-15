@@ -84,11 +84,17 @@ public:
     void SetSelectionEnd(int x, int y);
     void SetSelectionRange(int startX, int startY, int endX, int endY);
     bool IsSelected(int x, int absY);
+    bool HasSelection();
     std::wstring GetSelectedText();
+    std::wstring GetSelectedAnsiText();
     std::wstring GetWordAt(int x, int absY);
     bool HasWordAt(int x, int absY);
     std::wstring GetCurrentScreenText();
+    std::wstring GetCurrentScreenAnsiText();
     std::wstring GetHistoryText();
+    std::wstring GetHistoryAnsiText();
+    std::wstring GetAllScreenText();
+    std::wstring GetAllScreenAnsiText();
     size_t RowBase(int y) const;
     void MarkDirtyRow(int y);
     void MarkDirtyRange(int y1, int y2);
@@ -117,6 +123,7 @@ public:
     TerminalRowTextSnapshot MakeRowTextSnapshot(int absY, bool foldCase);
     void SelectAndRevealRange(int startX, int startY, int endX, int endY);
     void ClearLog(bool clearAllBuffer);
+    void ClearHistory();
     void SetDefaultColors(COLORREF newBg, COLORREF newFg);
     void RecolorTheme(COLORREF oldBg, COLORREF oldFg, COLORREF newBg, COLORREF newFg, bool (*isKnownBack)(COLORREF));
     void RecolorExistingTheme(COLORREF oldBg, COLORREF oldFg, COLORREF newBg, COLORREF newFg, bool (*isKnownBack)(COLORREF));

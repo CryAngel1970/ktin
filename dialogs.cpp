@@ -317,36 +317,44 @@ static LRESULT CALLBACK QuickConnectProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
                 KillWinTimer(g_app->hwndMain, ID_TIMER_AUTORECONNECT);
                 KillWinTimer(g_app->hwndMain, ID_TIMER_SWITCH_QUICK_CONNECT);
+                KillWinTimer(g_app->hwndMain, ID_TIMER_SWITCH_CONNECT);
 
-                // buildfix38: 빠른연결도 기존 세션을 먼저 종료합니다.
-                // 특히 빠른연결은 #session new 를 쓰기 때문에 기존 new 세션이 남아 있으면
-                // 다음 접속이 같은 세션명 충돌로 실패하거나 이전 세션이 살아 있을 수 있습니다.
+                // 같은 창에서 주소록 연결 예약과 빠른 연결 예약이 동시에 남지 않게 합니다.
+                g_app->pendingConnectSessionName.clear();
+                g_app->hasPendingConnect = false;
+
+                // 빠른 연결도 현재 창의 기존 내부 세션을 먼저 종료합니다.
                 bool zapped = ZapKnownTinTinSession();
 
                 // 빠른 연결은 전역 자동 로그인 설정을 접속 후 60초 동안만 검사합니다.
                 StartAutoLoginWindowFromGlobal();
 
-                // 빠른 연결은 주소록 세션이 아니므로 activeSession은 비움
+                // 빠른 연결은 주소록 세션이 아니므로 주소록 재연결 정보를 완전히 비웁니다.
+                g_app->activeSession = AddressBookEntry{};
                 g_app->hasActiveSession = false;
+
+                // 모든 KTin 창과 모든 접속에 서로 다른 내부 세션명을 사용합니다.
+                // 고정 이름 new를 재사용하면 끊어진 이전 세션으로 전환될 수 있습니다.
+                const std::wstring sessionName = CreateUniqueTinTinSessionName(L"quick");
 
                 // 문자셋 설정 먼저 전송
                 std::wstring charsetCmd = (charset == 1)
                     ? L"#CONFIG {CHARSET} {CP949TOUTF8}"
                     : L"#CONFIG {CHARSET} {UTF-8}";
-                std::wstring sessionCmd = L"#session new " + addr;
+                std::wstring sessionCmd = L"#session {" + sessionName + L"} " + addr;
 
                 if (zapped) {
-                    // #zap 처리 후 바로 같은 이름(new)으로 #session을 열면 충돌할 수 있으므로
-                    // 주소록 전환과 같은 방식으로 잠깐 늦춰 실행합니다.
+                    // #zap 처리가 끝난 뒤 새 고유 세션을 열도록 잠깐 늦춰 실행합니다.
                     g_app->pendingQuickCharsetCommand = charsetCmd;
                     g_app->pendingQuickConnectCommand = sessionCmd;
+                    g_app->pendingQuickSessionName = sessionName;
                     g_app->hasPendingQuickConnect = true;
                     RestartWinTimer(g_app->hwndMain, ID_TIMER_SWITCH_QUICK_CONNECT, 500);
                 }
                 else {
                     SendRawCommandToMud(charsetCmd);
                     SendRawCommandToMud(sessionCmd);
-                    MarkKnownTinTinSession(L"new");
+                    MarkKnownTinTinSession(sessionName);
                 }
 
                 // StartAutoLoginWindowFromGlobal()에서 이미 초기화했습니다.

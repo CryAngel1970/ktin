@@ -14,8 +14,8 @@ struct ScreenSizePopupState
 struct SettingsDlgState
 {
     HWND hwndList = nullptr;
-    HWND hwndGroups[5] = { nullptr };
-    std::vector<HWND> panelCtrls[5];
+    HWND hwndGroups[6] = { nullptr };
+    std::vector<HWND> panelCtrls[6];
     int currentIdx = 0;
 };
 

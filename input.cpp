@@ -15,6 +15,52 @@ namespace
 {
     constexpr size_t kMaxInputHistory = 1000;
 
+    bool ReadClipboardUnicodeText(HWND owner, std::wstring& outText)
+    {
+        outText.clear();
+
+        if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(owner))
+            return false;
+
+        bool ok = false;
+        HANDLE data = GetClipboardData(CF_UNICODETEXT);
+        if (data)
+        {
+            const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(data));
+            if (text)
+            {
+                outText.assign(text);
+                GlobalUnlock(data);
+                ok = true;
+            }
+        }
+
+        CloseClipboard();
+        return ok;
+    }
+
+    bool ContainsLineBreak(const std::wstring& text)
+    {
+        return text.find(L'\r') != std::wstring::npos ||
+               text.find(L'\n') != std::wstring::npos;
+    }
+
+    bool SendMultilineClipboardToMud(HWND hwnd)
+    {
+        std::wstring clipboardText;
+        if (!ReadClipboardUnicodeText(hwnd, clipboardText) ||
+            !ContainsLineBreak(clipboardText))
+        {
+            return false;
+        }
+
+        // 단일 행 EDIT 컨트롤의 기본 붙여넣기는 첫 줄만 남긴다.
+        // 여러 행일 때는 입력창에 넣지 않고 줄바꿈을 보존한 채
+        // TinTin++ 표준 입력으로 한 번에 전달한다.
+        SendMultilineTextToProcess(clipboardText);
+        return true;
+    }
+
     void TrimInputHistory()
     {
         if (!g_app)
@@ -721,6 +767,16 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                 return 0;
             }
             break;
+        }
+        break;
+    }
+
+    case WM_PASTE:
+    {
+        if (SendMultilineClipboardToMud(hwnd))
+        {
+            EnsureVisibleEditCaret(hwnd);
+            return 0;
         }
         break;
     }

@@ -19,6 +19,105 @@ static POINT s_logLastMouseClientPt = { 0, 0 };
 static const UINT_PTR ID_TIMER_LOG_DRAG_SCROLL = 30021;
 static const UINT LOG_DRAG_SCROLL_INTERVAL_MS = 50;
 
+void InvalidateTerminalDirtyRows(HWND hwnd);
+
+static void RefocusActiveInputAfterSelection()
+{
+    if (!g_app)
+        return;
+
+    const int index = g_app->activeEditIndex;
+    if (index >= 0 && index < INPUT_ROWS && g_app->hwndEdit[index])
+    {
+        SetFocus(g_app->hwndEdit[index]);
+        ShowCaret(g_app->hwndEdit[index]);
+    }
+}
+
+static void ClearTerminalSelectionAndRefocus(HWND hwnd)
+{
+    if (g_app && g_app->termBuffer)
+    {
+        g_app->termBuffer->ClearSelection();
+        InvalidateTerminalDirtyRows(hwnd);
+    }
+    RefocusActiveInputAfterSelection();
+}
+
+static void ExecuteTerminalSelectionAction(HWND hwnd, int commandId)
+{
+    if (!g_app || !g_app->termBuffer)
+        return;
+
+    HWND owner = (g_app->hwndMain && IsWindow(g_app->hwndMain)) ? g_app->hwndMain : hwnd;
+    if (commandId != ID_LOG_CLOSE_SELECTION)
+        HandleTerminalExportCommand(owner, commandId);
+
+    ClearTerminalSelectionAndRefocus(hwnd);
+}
+
+static void ShowTerminalSelectionMenu(HWND hwnd)
+{
+    if (!g_app || !g_app->termBuffer)
+        return;
+
+    UniqueMenu menu(CreatePopupMenu());
+    if (!menu.IsValid())
+        return;
+
+    AppendMenuW(menu.Get(), MF_STRING, ID_LOG_COPY, L"복사하기");
+    AppendMenuW(menu.Get(), MF_STRING, ID_LOG_SAVE_SELECTION, L"파일저장");
+    AppendMenuW(menu.Get(), MF_STRING, ID_LOG_COPY_SELECTION_ANSI, L"코드로 복사하기");
+    AppendMenuW(menu.Get(), MF_STRING, ID_LOG_SAVE_SELECTION_ANSI, L"코드로 파일저장");
+    AppendMenuW(menu.Get(), MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu.Get(), MF_STRING, ID_LOG_CLOSE_SELECTION, L"닫기");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    HWND owner = (g_app->hwndMain && IsWindow(g_app->hwndMain)) ? g_app->hwndMain : hwnd;
+    SetForegroundWindow(owner);
+
+    const UINT command = TrackPopupMenu(menu.Get(),
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+        pt.x, pt.y, 0, owner, nullptr);
+
+    PostMessageW(owner, WM_NULL, 0, 0);
+
+    if (IsTerminalSelectionCommand(static_cast<int>(command)))
+        ExecuteTerminalSelectionAction(hwnd, static_cast<int>(command));
+}
+
+static void RunConfiguredSelectionAction(HWND hwnd)
+{
+    if (!g_app || !g_app->termBuffer)
+        return;
+
+    if (!g_app->termBuffer->HasSelection())
+    {
+        ClearTerminalSelectionAndRefocus(hwnd);
+        return;
+    }
+
+    switch (g_app->selectionAfterDragMode)
+    {
+    case 0:
+        ExecuteTerminalSelectionAction(hwnd, ID_LOG_COPY);
+        break;
+    case 1:
+        ExecuteTerminalSelectionAction(hwnd, ID_LOG_COPY_SELECTION_ANSI);
+        break;
+    case 2:
+        ExecuteTerminalSelectionAction(hwnd, ID_LOG_SAVE_SELECTION);
+        break;
+    case 3:
+        ExecuteTerminalSelectionAction(hwnd, ID_LOG_SAVE_SELECTION_ANSI);
+        break;
+    default:
+        ShowTerminalSelectionMenu(hwnd);
+        break;
+    }
+}
+
 static UniqueGdiObject s_logBackBitmap;
 static int s_logBackWidth = 0;
 static int s_logBackHeight = 0;
@@ -801,8 +900,14 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     SendTextToMud(word);
                     if (g_app->hwndEdit[g_app->activeEditIndex]) SetFocus(g_app->hwndEdit[g_app->activeEditIndex]);
                 }
+                InvalidateTerminalDirtyRows(hwnd);
             }
-            InvalidateTerminalDirtyRows(hwnd);
+            else {
+                // 선택 반전이 먼저 보이도록 갱신한 뒤 설정된 후속 동작을 수행합니다.
+                InvalidateTerminalDirtyRows(hwnd);
+                UpdateWindow(hwnd);
+                RunConfiguredSelectionAction(hwnd);
+            }
         }
         return 0;
     }
@@ -821,28 +926,89 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_RBUTTONUP:
     case WM_CONTEXTMENU:
     {
-        UniqueMenu hMenu(CreatePopupMenu());
-        if (hMenu.IsValid()) {
-            // 터미널 우클릭 메뉴는 안정성을 위해 일반 문자열 메뉴로 표시합니다.
-            if (g_app && g_app->menuHidden) {
-                AppendMenuW(hMenu.Get(), MF_STRING, ID_LOG_SHOW_MENU, L"상단 메뉴 보이기");
-                AppendMenuW(hMenu.Get(), MF_SEPARATOR, 0, nullptr);
-            }
+        UniqueMenu menu(CreatePopupMenu());
+        UniqueMenu copyMenu(CreatePopupMenu());
+        UniqueMenu saveMenu(CreatePopupMenu());
+        UniqueMenu clearMenu(CreatePopupMenu());
+        if (!menu.IsValid() || !copyMenu.IsValid() || !saveMenu.IsValid() || !clearMenu.IsValid())
+            return 0;
 
-            AppendMenuW(hMenu.Get(), MF_STRING, ID_LOG_COPY, L"복사하기");
+        if (g_app && g_app->menuHidden)
+        {
+            AppendMenuW(menu.Get(), MF_STRING, ID_LOG_SHOW_MENU, L"상단 메뉴 보이기");
+            AppendMenuW(menu.Get(), MF_SEPARATOR, 0, nullptr);
+        }
 
-            POINT pt;
+        const bool hasSelection = g_app && g_app->termBuffer && g_app->termBuffer->HasSelection();
+        const UINT selectionState = hasSelection ? MF_STRING : (MF_STRING | MF_GRAYED);
+
+        AppendMenuW(copyMenu.Get(), MF_STRING, ID_LOG_COPY_CURRENT, L"현재화면 복사하기");
+        AppendMenuW(copyMenu.Get(), selectionState, ID_LOG_COPY, L"선택블럭 복사하기");
+        AppendMenuW(copyMenu.Get(), MF_STRING, ID_LOG_COPY_HISTORY, L"지난화면 복사하기");
+        AppendMenuW(copyMenu.Get(), MF_STRING, ID_LOG_COPY_ALL, L"전체화면 복사하기");
+        AppendMenuW(copyMenu.Get(), MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(copyMenu.Get(), MF_STRING, ID_LOG_COPY_CURRENT_ANSI, L"현재화면 코드로 복사하기");
+        AppendMenuW(copyMenu.Get(), selectionState, ID_LOG_COPY_SELECTION_ANSI, L"선택블럭 코드로 복사하기");
+        AppendMenuW(copyMenu.Get(), MF_STRING, ID_LOG_COPY_HISTORY_ANSI, L"지난화면 코드로 복사하기");
+        AppendMenuW(copyMenu.Get(), MF_STRING, ID_LOG_COPY_ALL_ANSI, L"전체화면 코드로 복사하기");
+
+        AppendMenuW(saveMenu.Get(), MF_STRING, ID_LOG_SAVE_CURRENT, L"현재화면 파일로 저장");
+        AppendMenuW(saveMenu.Get(), selectionState, ID_LOG_SAVE_SELECTION, L"선택블럭 파일로 저장");
+        AppendMenuW(saveMenu.Get(), MF_STRING, ID_LOG_SAVE_HISTORY, L"지난화면 파일로 저장");
+        AppendMenuW(saveMenu.Get(), MF_STRING, ID_LOG_SAVE_ALL, L"전체화면 파일로 저장");
+        AppendMenuW(saveMenu.Get(), MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(saveMenu.Get(), MF_STRING, ID_LOG_SAVE_CURRENT_ANSI, L"현재화면 코드로 저장");
+        AppendMenuW(saveMenu.Get(), selectionState, ID_LOG_SAVE_SELECTION_ANSI, L"선택블럭 코드로 저장");
+        AppendMenuW(saveMenu.Get(), MF_STRING, ID_LOG_SAVE_HISTORY_ANSI, L"지난화면 코드로 저장");
+        AppendMenuW(saveMenu.Get(), MF_STRING, ID_LOG_SAVE_ALL_ANSI, L"전체화면 코드로 저장");
+
+        AppendMenuW(clearMenu.Get(), MF_STRING, ID_LOG_CLEAR_CURRENT, L"현재화면 지우기");
+        AppendMenuW(clearMenu.Get(), MF_STRING, ID_LOG_CLEAR_HISTORY, L"지난화면 지우기");
+        AppendMenuW(clearMenu.Get(), MF_STRING, ID_LOG_CLEAR_ALL, L"전체화면 지우기");
+
+        if (AppendMenuW(menu.Get(), MF_POPUP, reinterpret_cast<UINT_PTR>(copyMenu.Get()), L"복사하기"))
+            copyMenu.Release();
+        if (AppendMenuW(menu.Get(), MF_POPUP, reinterpret_cast<UINT_PTR>(saveMenu.Get()), L"파일저장"))
+            saveMenu.Release();
+        if (AppendMenuW(menu.Get(), MF_POPUP, reinterpret_cast<UINT_PTR>(clearMenu.Get()), L"지우기"))
+            clearMenu.Release();
+        AppendMenuW(menu.Get(), MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu.Get(), MF_STRING, ID_LOG_CLOSE_SELECTION, L"닫기");
+
+        POINT pt{};
+        if (msg == WM_CONTEXTMENU && GET_X_LPARAM(lParam) != -1 && GET_Y_LPARAM(lParam) != -1)
+            pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        else
             GetCursorPos(&pt);
 
-            HWND hOwner = (g_app && g_app->hwndMain) ? g_app->hwndMain : hwnd;
-            SetForegroundWindow(hOwner);
+        HWND owner = (g_app && g_app->hwndMain) ? g_app->hwndMain : hwnd;
+        SetForegroundWindow(owner);
+        const UINT command = TrackPopupMenu(menu.Get(),
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+            pt.x, pt.y, 0, owner, nullptr);
+        PostMessageW(owner, WM_NULL, 0, 0);
 
-            TrackPopupMenu(
-                hMenu.Get(),
-                TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
-                pt.x, pt.y, 0, hOwner, nullptr);
-
-            PostMessageW(hOwner, WM_NULL, 0, 0);
+        if (command == ID_LOG_SHOW_MENU)
+        {
+            if (g_app)
+            {
+                HWND target = g_app->hwndMain ? g_app->hwndMain : GetParent(hwnd);
+                g_app->menuHidden = false;
+                LayoutChildren(target);
+                InvalidateRect(target, nullptr, FALSE);
+            }
+        }
+        else if (command == ID_LOG_CLOSE_SELECTION)
+        {
+            ClearTerminalSelectionAndRefocus(hwnd);
+        }
+        else if (command != 0)
+        {
+            HandleTerminalExportCommand(owner, static_cast<int>(command));
+            if (IsTerminalSelectionCommand(static_cast<int>(command)))
+                ClearTerminalSelectionAndRefocus(hwnd);
+            else
+                RefocusActiveInputAfterSelection();
         }
         return 0;
     }
@@ -850,15 +1016,8 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_COMMAND:
     {
         int id = LOWORD(wParam);
-        if (id == ID_LOG_COPY) {
-            if (g_app && g_app->termBuffer) {
-
-                std::wstring text = g_app->termBuffer->GetSelectedText();
-                if (!text.empty())
-                    SetClipboardUnicodeText(hwnd, text);
-                g_app->termBuffer->ClearSelection();
-                InvalidateTerminalDirtyRows(hwnd);
-            }
+        if (IsTerminalSelectionCommand(id)) {
+            ExecuteTerminalSelectionAction(hwnd, id);
             return 0;
         }
         else if (id == ID_LOG_SHOW_MENU) {

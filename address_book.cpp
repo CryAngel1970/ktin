@@ -345,12 +345,20 @@ void BeginSwitchToAddressBookEntry(const AddressBookEntry& entry)
         return;
 
     g_app->pendingConnectEntry = entry;
+    g_app->pendingConnectSessionName = CreateUniqueTinTinSessionName(L"address");
     g_app->hasPendingConnect = true;
 
     KillWinTimer(g_app->hwndMain, ID_TIMER_AUTORECONNECT);
 
+    // 같은 창에서 빠른 연결과 주소록 연결 예약이 동시에 남지 않게 합니다.
+    KillWinTimer(g_app->hwndMain, ID_TIMER_SWITCH_QUICK_CONNECT);
+    g_app->pendingQuickCharsetCommand.clear();
+    g_app->pendingQuickConnectCommand.clear();
+    g_app->pendingQuickSessionName.clear();
+    g_app->hasPendingQuickConnect = false;
+
     // 기존 세션 강제 종료
-    // buildfix38: 주소록 세션뿐 아니라 빠른연결의 고정 세션명 new도 함께 종료합니다.
+    // 주소록 또는 빠른 연결로 만든 현재 창의 내부 세션을 종료합니다.
     ZapKnownTinTinSession();
 
     g_app->isConnected = false; // 실제 세션 활성화 메시지를 받을 때 true로 전환
@@ -374,13 +382,15 @@ void BeginSwitchToAddressBookEntry(const AddressBookEntry& entry)
     RestartWinTimer(g_app->hwndMain, ID_TIMER_SWITCH_CONNECT, 500);
 }
 
-void ConnectAddressBookEntry(const AddressBookEntry& entry)
+void ConnectAddressBookEntry(const AddressBookEntry& entry, const std::wstring& internalSessionName)
 {
     if (!g_app) return;
-
-    std::wstring sessionName = Trim(entry.name);
+    std::wstring sessionName = Trim(internalSessionName);
     std::wstring host = Trim(entry.host);
-    if (sessionName.empty() || host.empty()) return;
+    if (host.empty()) return;
+
+    if (sessionName.empty())
+        sessionName = CreateUniqueTinTinSessionName(L"address");
 
     int port = (entry.port <= 0 || entry.port > 65535) ? 23 : entry.port;
     wchar_t portBuf[32];
