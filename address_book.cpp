@@ -617,6 +617,16 @@ bool PromptAddressBook(HWND hwnd)
 
     RefreshAddressBookList(hList);
 
+    // 주소록을 열자마자 첫 항목을 선택해 Enter만으로 연결할 수 있게 합니다.
+    if (g_app && !g_app->addressBook.empty()) {
+        ListView_SetItemState(
+            hList,
+            0,
+            LVIS_SELECTED | LVIS_FOCUSED,
+            LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(hList, 0, FALSE);
+    }
+
     // ★ 신규: 새로 만들기 버튼 상단에 정렬 콤보박스 배치
     CreateWindowExW(0, L"STATIC", L"정렬순서:", WS_CHILD | WS_VISIBLE, 350, 16, 60, 20, hDlg, nullptr, 0, 0);
     HWND hComboSort = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP, 410, 12, 100, 150, hDlg, (HMENU)(UINT_PTR)ID_ADDRESSBOOK_SORT, 0, nullptr);
@@ -748,6 +758,35 @@ LRESULT CALLBACK AddressBookEntryEditorProc(HWND hwnd, UINT msg, WPARAM wParam, 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+static bool ConnectSelectedAddressBookEntryFromPopup(HWND hwnd)
+{
+    if (!g_app)
+        return false;
+
+    HWND hList = GetDlgItem(hwnd, ID_ADDRESSBOOK_LIST);
+    if (!hList)
+        return false;
+
+    int sel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
+    if (sel < 0 || sel >= (int)g_app->addressBook.size()) {
+        MessageBeep(MB_ICONWARNING);
+        return false;
+    }
+
+    AddressBookEntry entryToConnect = g_app->addressBook[sel];
+
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    g_app->addressBook[sel].lastConnected =
+        ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+
+    SortAddressBook();
+    SaveAddressBook();
+    BeginSwitchToAddressBookEntry(entryToConnect);
+    DestroyWindow(hwnd);
+    return true;
+}
+
 bool ConfirmDeleteAddressBookEntry(HWND hwnd, const std::wstring& name)
 {
     std::wstring msg = L"'" + name + L"' 주소를 삭제하시겠습니까?";
@@ -761,18 +800,9 @@ LRESULT CALLBACK AddressBookPopupProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     {
         LPNMHDR pnmh = (LPNMHDR)lParam;
         if (pnmh->idFrom == ID_ADDRESSBOOK_LIST) {
-            if (pnmh->code == NM_DBLCLK) {
-                if (!g_app) return 0;
-                HWND hList = GetDlgItem(hwnd, ID_ADDRESSBOOK_LIST);
-                int sel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
-                if (sel >= 0 && sel < (int)g_app->addressBook.size()) {
-                    AddressBookEntry entryToConnect = g_app->addressBook[sel];
-                    FILETIME ft; GetSystemTimeAsFileTime(&ft);
-                    g_app->addressBook[sel].lastConnected = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-                    SortAddressBook(); SaveAddressBook();
-                    BeginSwitchToAddressBookEntry(entryToConnect);
-                    DestroyWindow(hwnd);
-                }
+            if (pnmh->code == NM_DBLCLK || pnmh->code == NM_RETURN) {
+                // 리스트 더블클릭과 Enter를 모두 같은 연결 동작으로 처리합니다.
+                ConnectSelectedAddressBookEntryFromPopup(hwnd);
                 return 0;
             }
             else if (pnmh->code == LVN_COLUMNCLICK) {
@@ -854,19 +884,11 @@ LRESULT CALLBACK AddressBookPopupProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             }
             return 0;
         }
-        case ID_ADDRESSBOOK_CONNECT: {
-            if (!g_app) return 0;
-            HWND hList = GetDlgItem(hwnd, ID_ADDRESSBOOK_LIST);
-            int sel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
-            if (sel < 0 || sel >= (int)g_app->addressBook.size()) return 0;
-            AddressBookEntry entryToConnect = g_app->addressBook[sel];
-            FILETIME ft; GetSystemTimeAsFileTime(&ft);
-            g_app->addressBook[sel].lastConnected = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-            SortAddressBook(); SaveAddressBook();
-            BeginSwitchToAddressBookEntry(entryToConnect);
-            DestroyWindow(hwnd);
+        case IDOK:
+        case ID_ADDRESSBOOK_CONNECT:
+            // 일반 대화상자처럼 IDOK가 전달되는 경우와 연결 버튼을 함께 처리합니다.
+            ConnectSelectedAddressBookEntryFromPopup(hwnd);
             return 0;
-        }
         case ID_ADDRESSBOOK_SORT: {
             if (HIWORD(wParam) == CBN_SELCHANGE) {
                 if (!g_app) return 0;

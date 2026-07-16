@@ -94,7 +94,11 @@ struct AppState
     std::string rawAnsiCurrentScreen;
     std::string rawAnsiHistory;
 
-    // 로그창 다시그리기 예약 플래그
+    // 수신 스레드가 UI에 올린 WM_APP_LOG_CHUNK가 아직 처리되지 않았는지 표시합니다.
+    // 화면 갱신 메시지 폭주를 막되 마지막 수신 조각이 다음 입력까지 보류되지 않게 합니다.
+    std::atomic<bool> logChunkMessagePending = false;
+
+    // UI 스레드의 30ms 로그창 다시그리기 예약 플래그
     bool logRedrawPending = false;
 
     int screenCols = 80;

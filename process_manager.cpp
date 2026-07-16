@@ -28,8 +28,19 @@ namespace
 
     void PostLogDirty(HWND hwndMain)
     {
-        if (hwndMain)
-            PostMessageW(hwndMain, WM_APP_LOG_CHUNK, 0, 0);
+        if (!hwndMain || !g_app)
+            return;
+
+        // ReaderThreadProc는 블로킹 ReadFile()을 사용합니다. 예전 50ms 틱 제한은
+        // 마지막 출력이 제한 시간 안에 도착한 뒤 추가 데이터가 없으면 화면 갱신
+        // 메시지를 영구히 보류했습니다. UI가 아직 처리하지 않은 알림이 없을 때만
+        // 즉시 한 번 게시하고, 실제 다시 그리기는 기존 UI 30ms 타이머가 묶습니다.
+        bool expected = false;
+        if (!g_app->logChunkMessagePending.compare_exchange_strong(expected, true))
+            return;
+
+        if (!PostMessageW(hwndMain, WM_APP_LOG_CHUNK, 0, 0))
+            g_app->logChunkMessagePending.store(false);
     }
 
     void AppendBounded(std::string& dst, const char* data, size_t len, size_t limit)
@@ -71,23 +82,6 @@ void ReaderThreadProc(HWND hwndMain, HANDLE hRead)
     AnsiToRunsParser parser;
     char buffer[4096];
 
-    DWORD lastPostTick = GetTickCount();
-    bool redrawPending = false;
-
-    auto flushRedraw = [&](bool force)
-    {
-        if (!redrawPending)
-            return;
-
-        DWORD now = GetTickCount();
-        if (!force && now - lastPostTick < 50)
-            return;
-
-        PostLogDirty(hwndMain);
-        redrawPending = false;
-        lastPostTick = now;
-    };
-
     while (g_app && !g_app->shuttingDown)
     {
         DWORD read = 0;
@@ -107,16 +101,12 @@ void ReaderThreadProc(HWND hwndMain, HANDLE hRead)
         }
 
         if (parser.Feed(buffer, read))
-        {
-            redrawPending = true;
-            flushRedraw(false);
-        }
+            PostLogDirty(hwndMain);
     }
 
     if (parser.Flush())
-        redrawPending = true;
+        PostLogDirty(hwndMain);
 
-    flushRedraw(true);
     PostMessageW(hwndMain, WM_APP_PROCESS_EXIT, 0, 0);
 }
 
@@ -136,6 +126,8 @@ void StopProcessAndThread()
 
     if (g_app->readerThread.joinable())
         g_app->readerThread.join();
+
+    g_app->logChunkMessagePending.store(false);
 
     if (g_app->proc.process)
     {

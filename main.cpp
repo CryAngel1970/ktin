@@ -1117,7 +1117,12 @@ bool HandleMainExitSizeMove(HWND hwnd)
 bool HandleMainLogChunk(HWND hwnd, LPARAM)
 {
     if (g_app)
+    {
+        // ReaderThreadProc가 다음 출력 조각을 즉시 알릴 수 있도록 먼저 해제합니다.
+        // 실제 paint는 ScheduleLogRedraw()의 기존 30ms 타이머가 계속 묶습니다.
+        g_app->logChunkMessagePending.store(false);
         ScheduleLogRedraw(hwnd);
+    }
     return true;
 }
 
@@ -1148,6 +1153,7 @@ bool HandleMainStartBackend(HWND hwnd)
         return true;
 
     g_app->shuttingDown = false;
+    g_app->logChunkMessagePending.store(false);
 
     if (!StartTinTinProcess())
     {
