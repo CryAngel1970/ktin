@@ -63,6 +63,9 @@ private:
 
     std::string oscParams_;
 
+    // TinTin++ 세션 종료/재접속 문구가 여러 읽기 조각으로 나뉘어도 찾기 위한 짧은 버퍼.
+    std::wstring sessionBoundaryProbe_;
+
     Utf8Decoder decoder_;
     bool dirty_ = false;
 

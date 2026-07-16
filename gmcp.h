@@ -9,6 +9,11 @@
 bool PostGmcpPacketFromOsc(std::string_view encoded);
 bool HandleMainGmcpUpdate(HWND hwnd, LPARAM lParam);
 
+// 서버가 일반 텍스트로 보낸 프롬프트를 관찰하여 체력/정신력 막대를 갱신합니다.
+// 프롬프트 자체는 TerminalBuffer가 받은 순서 그대로 표시하며 여기서 다시 그리지 않습니다.
+void ObserveTerminalTextForVitals(std::wstring_view text);
+void ClearTerminalTextVitalsState();
+
 void ShowGmcpMapWindow(HWND owner);
 void ShowGmcpInfoWindow(HWND owner);
 void CloseGmcpWindows();

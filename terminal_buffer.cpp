@@ -1660,6 +1660,124 @@ void TerminalBuffer::ClearLineRangePairAwareUnlocked(int y, int x1, int x2)
     for (int x = x1; x <= x2; ++x)
         ClearCellPairAwareUnlocked(x, y);
 }
+bool TerminalBuffer::RowHasVisibleContentUnlocked(int y) const
+{
+    if (y < 0 || y >= height || width <= 0)
+        return false;
+
+    const size_t base = RowBase(y);
+    if (base >= cells.size())
+        return false;
+
+    const size_t count = std::min(static_cast<size_t>(width), cells.size() - base);
+    for (size_t x = 0; x < count; ++x)
+    {
+        const TerminalCell& cell = cells[base + x];
+        if (cell.isWideTrailer)
+            continue;
+
+        // 글자가 있거나 ANSI 배경색으로 실제 화면을 칠한 행만 보존한다.
+        // 공백에 글자색/굵기만 지정한 경우는 눈에 보이지 않으므로 빈 행으로 본다.
+        if (cell.ch != L' ' || cell.bg != defaultBg)
+            return true;
+    }
+    return false;
+}
+
+void TerminalBuffer::ArchiveCurrentScreenToHistory()
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    ArchiveCurrentScreenToHistoryUnlocked();
+}
+
+void TerminalBuffer::ArchiveCurrentScreenToHistoryUnlocked()
+{
+    if (width <= 0 || height <= 0 || cells.empty())
+        return;
+
+    int firstRow = -1;
+    int lastRow = -1;
+    for (int y = 0; y < height; ++y)
+    {
+        if (!RowHasVisibleContentUnlocked(y))
+            continue;
+        if (firstRow < 0)
+            firstRow = y;
+        lastRow = y;
+    }
+
+    if (firstRow < 0 || lastRow < firstRow)
+        return;
+
+    const TerminalCell blank{ L' ', defaultFg, defaultBg, false, false };
+    const size_t rowWidth = static_cast<size_t>(width);
+    std::vector<std::vector<TerminalCell>> snapshot;
+    snapshot.reserve(static_cast<size_t>(lastRow - firstRow + 1));
+
+    for (int y = firstRow; y <= lastRow; ++y)
+    {
+        std::vector<TerminalCell> row(rowWidth, blank);
+        const size_t base = RowBase(y);
+        if (base < cells.size())
+        {
+            const size_t count = std::min(rowWidth, cells.size() - base);
+            if (count > 0)
+                std::copy_n(cells.begin() + base, count, row.begin());
+        }
+        snapshot.push_back(std::move(row));
+    }
+
+    // 세션 종료 문구에서 한 번, 뒤이은 ESC[2J에서 다시 한 번 보존을 요청할 수 있다.
+    // 히스토리 마지막이 현재 스냅샷과 완전히 같으면 두 번째 복사는 생략한다.
+    auto sameCell = [](const TerminalCell& a, const TerminalCell& b) {
+        return a.ch == b.ch && a.fg == b.fg && a.bg == b.bg &&
+               a.bold == b.bold && a.isWideTrailer == b.isWideTrailer;
+    };
+
+    bool sameAsTail = history.size() >= snapshot.size();
+    if (sameAsTail)
+    {
+        const size_t tailStart = history.size() - snapshot.size();
+        for (size_t rowIndex = 0; rowIndex < snapshot.size() && sameAsTail; ++rowIndex)
+        {
+            const auto& oldRow = history[tailStart + rowIndex];
+            const auto& newRow = snapshot[rowIndex];
+            if (oldRow.size() != newRow.size())
+            {
+                sameAsTail = false;
+                break;
+            }
+            for (size_t x = 0; x < newRow.size(); ++x)
+            {
+                if (!sameCell(oldRow[x], newRow[x]))
+                {
+                    sameAsTail = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (sameAsTail)
+        return;
+
+    hasSelection = false;
+    const int addedRows = static_cast<int>(snapshot.size());
+    for (auto& row : snapshot)
+        history.push_back(std::move(row));
+
+    while (static_cast<int>(history.size()) > maxHistory)
+        history.pop_front();
+
+    // 사용자가 지난 화면을 보고 있었다면 새 스냅샷이 들어와도 같은 위치를 유지한다.
+    if (scrollOffset > 0)
+    {
+        scrollOffset += addedRows;
+        if (scrollOffset > static_cast<int>(history.size()))
+            scrollOffset = static_cast<int>(history.size());
+    }
+}
+
 void TerminalBuffer::HandleCommand(char cmd, const std::string& params) {
     std::lock_guard<std::mutex> lock(mtx);
     std::vector<int> args; int val = 0; bool have = false;
@@ -1681,7 +1799,21 @@ void TerminalBuffer::HandleCommand(char cmd, const std::string& params) {
         int mode = args.empty() ? 0 : args[0];
         if (mode == 0) { ClearLineRangePairAwareUnlocked(cursorY, cursorX, width - 1); for (int y = cursorY + 1; y < height; ++y) ClearLineRangePairAwareUnlocked(y, 0, width - 1); }
         else if (mode == 1) { for (int y = 0; y < cursorY; ++y) ClearLineRangePairAwareUnlocked(y, 0, width - 1); ClearLineRangePairAwareUnlocked(cursorY, 0, cursorX); }
-        else if (mode == 2) { for (int y = 0; y < height; ++y) ClearLineRangePairAwareUnlocked(y, 0, width - 1); cursorX = 0; cursorY = 0; scrollOffset = 0; }
+        else if (mode == 2) {
+            // 재접속/로그인 화면의 ESC[2J가 현재 화면을 지우기 전에
+            // 전투·세션 종료·재연결 메시지를 스크롤 기록으로 옮긴다.
+            ArchiveCurrentScreenToHistoryUnlocked();
+
+            const TerminalCell blank{ L' ', defaultFg, defaultBg, false, false };
+            std::fill(cells.begin(), cells.end(), blank);
+            rowOffset = 0;
+            cursorX = 0;
+            cursorY = 0;
+            scrollOffset = 0;
+            pendingWrap = false;
+            pendingLiveScrollRows = 0;
+            MarkAllDirtyUnlocked();
+        }
     }
     else if (cmd == 'K') {
         int mode = args.empty() ? 0 : args[0];

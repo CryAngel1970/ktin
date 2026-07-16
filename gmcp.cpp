@@ -4,11 +4,14 @@
 #include "settings.h"
 #include "terminal_buffer.h"
 #include "utils.h"
+#include "win_util.h"
 
 #include <algorithm>
+#include <mutex>
 #include <cctype>
 #include <cstdlib>
 #include <cwchar>
+#include <cwctype>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -100,6 +103,9 @@ namespace
     int g_mapScrollRow = 0;
     bool g_infoRawVisible = false;
     bool g_adjustingInfoLayout = false;
+
+    std::mutex g_terminalVitalsMutex;
+    std::wstring g_terminalVitalsTail;
 
     bool ExtractJsonString(const std::string& json, const std::string& key, std::string& value);
     bool ExtractJsonNumber(const std::string& json, const std::vector<std::string>& keys, double& value);
@@ -287,13 +293,15 @@ namespace
         return text;
     }
 
-    bool ReadPromptNumber(const std::wstring& text, size_t& pos, double& value)
+    bool ReadStrictPromptNumber(const std::wstring& text, size_t& pos, double& value)
     {
-        while (pos < text.size() &&
-            !(text[pos] == L'-' || (text[pos] >= L'0' && text[pos] <= L'9')))
+        while (pos < text.size() && std::iswspace(text[pos]))
             ++pos;
-        if (pos >= text.size())
+        if (pos >= text.size() ||
+            !(text[pos] == L'-' || (text[pos] >= L'0' && text[pos] <= L'9')))
+        {
             return false;
+        }
 
         wchar_t* end = nullptr;
         value = std::wcstod(text.c_str() + pos, &end);
@@ -303,33 +311,90 @@ namespace
         return true;
     }
 
-    bool ParseCursorVitals(const std::string& json,
+    bool ParsePlainPromptAt(const std::wstring& text, size_t start, size_t& end,
         double& hp, double& maxHp, double& mp, double& maxMp)
     {
-        std::string raw;
-        if (!ExtractJsonString(json, "text", raw))
+        if (start >= text.size() || text[start] != L'[')
             return false;
 
-        std::wstring text = StripMudColorTokens(Utf8ToWide(raw));
-        size_t bracket = text.find(L'[');
-        size_t pos = bracket == std::wstring::npos ? 0 : bracket + 1;
+        size_t pos = start + 1;
+        if (!ReadStrictPromptNumber(text, pos, hp))
+            return false;
 
-        if (!ReadPromptNumber(text, pos, hp)) return false;
-        size_t slash1 = text.find(L'/', pos);
-        if (slash1 == std::wstring::npos) return false;
-        pos = slash1 + 1;
-        if (!ReadPromptNumber(text, pos, maxHp)) return false;
+        while (pos < text.size() && std::iswspace(text[pos]))
+            ++pos;
+        if (pos >= text.size() || text[pos] != L'/')
+            return false;
+        ++pos;
 
-        size_t comma = text.find(L',', pos);
-        if (comma == std::wstring::npos) return false;
-        pos = comma + 1;
-        if (!ReadPromptNumber(text, pos, mp)) return false;
-        size_t slash2 = text.find(L'/', pos);
-        if (slash2 == std::wstring::npos) return false;
-        pos = slash2 + 1;
-        if (!ReadPromptNumber(text, pos, maxMp)) return false;
+        if (!ReadStrictPromptNumber(text, pos, maxHp))
+            return false;
+        while (pos < text.size() && std::iswspace(text[pos]))
+            ++pos;
+        if (pos >= text.size() || text[pos] != L',')
+            return false;
+        ++pos;
 
+        if (!ReadStrictPromptNumber(text, pos, mp))
+            return false;
+        while (pos < text.size() && std::iswspace(text[pos]))
+            ++pos;
+        if (pos >= text.size() || text[pos] != L'/')
+            return false;
+        ++pos;
+
+        if (!ReadStrictPromptNumber(text, pos, maxMp))
+            return false;
+        while (pos < text.size() && std::iswspace(text[pos]))
+            ++pos;
+
+        // Sector_D 기본 프롬프트는 명령/피로 수치를 <...> 안에 넣습니다.
+        // 이 표식을 요구하여 일반 문장 속 숫자 배열을 프롬프트로 오인하지 않습니다.
+        if (pos >= text.size() || text[pos] != L'<')
+            return false;
+
+        const size_t greater = text.find(L'>', pos + 1);
+        if (greater == std::wstring::npos || greater - start > 128)
+            return false;
+        const size_t close = text.find(L']', greater + 1);
+        if (close == std::wstring::npos || close - start > 256)
+            return false;
+
+        end = close + 1;
         return maxHp > 0.0 && maxMp > 0.0;
+    }
+
+    std::string NumberForJson(double value)
+    {
+        std::ostringstream out;
+        out.precision(15);
+        out << value;
+        return out.str();
+    }
+
+    void PostTerminalVitalsPacket(double hp, double maxHp, double mp, double maxMp)
+    {
+        if (!g_app || !g_app->hwndMain)
+            return;
+
+        std::unique_ptr<GmcpPacket> packet(new (std::nothrow) GmcpPacket());
+        if (!packet)
+            return;
+
+        // 실제 GMCP 모듈과 구분되는 내부 이벤트입니다. ApplyPacket()은 이를
+        // 원문 모듈 목록에 보관하지 않고 상태 막대 갱신에만 사용합니다.
+        packet->module = "KTin.TerminalVitals";
+        packet->json = "{\"hp\":" + NumberForJson(hp) +
+            ",\"max_hp\":" + NumberForJson(maxHp) +
+            ",\"mp\":" + NumberForJson(mp) +
+            ",\"max_mp\":" + NumberForJson(maxMp) + "}";
+
+        GmcpPacket* raw = packet.release();
+        if (!PostMessageW(g_app->hwndMain, WM_APP_GMCP_UPDATE, 0,
+            reinterpret_cast<LPARAM>(raw)))
+        {
+            delete raw;
+        }
     }
 
     void UpdateVitalsFromPacket(const GmcpPacket& packet)
@@ -337,7 +402,8 @@ namespace
         double hp = 0.0, maxHp = 0.0, mp = 0.0, maxMp = 0.0;
         bool parsed = false;
 
-        if (packet.module == "Looming.Vitals")
+        if (packet.module == "Looming.Vitals" ||
+            packet.module == "KTin.TerminalVitals")
         {
             bool haveHp = ExtractJsonNumber(packet.json,
                 { "hp", "health", "체력" }, hp);
@@ -349,10 +415,6 @@ namespace
                 { "max_mp", "maxmp", "mana_max", "최대정신력" }, maxMp);
             parsed = haveHp && haveMaxHp && haveMp && haveMaxMp &&
                 maxHp > 0.0 && maxMp > 0.0;
-        }
-        else if (packet.module == "Looming.Cursor")
-        {
-            parsed = ParseCursorVitals(packet.json, hp, maxHp, mp, maxMp);
         }
 
         if (parsed)
@@ -1158,6 +1220,12 @@ namespace
             const char* name = ModuleNameForOption(i);
             if (!name || !g_app->gmcpDisplayModules[i])
                 continue;
+            if (i == GMCP_DISPLAY_VITALS &&
+                g_model.haveHp && g_model.haveMaxHp &&
+                g_model.haveMp && g_model.haveMaxMp)
+            {
+                return true;
+            }
             if (g_model.modules.find(name) != g_model.modules.end())
                 return true;
         }
@@ -1186,6 +1254,12 @@ namespace
                 continue;
             selectedAny = true;
             const char* name = ModuleNameForOption(i);
+            if (i == GMCP_DISPLAY_VITALS &&
+                g_model.haveHp && g_model.haveMaxHp &&
+                g_model.haveMp && g_model.haveMaxMp)
+            {
+                continue;
+            }
             if (name && g_model.modules.find(name) == g_model.modules.end())
                 waiting.push_back(DisplayModuleName(name));
         }
@@ -1395,7 +1469,8 @@ namespace
 
     void ApplyPacket(const GmcpPacket& packet)
     {
-        g_model.modules[packet.module] = packet.json;
+        if (packet.module != "KTin.TerminalVitals")
+            g_model.modules[packet.module] = packet.json;
         UpdateVitalsFromPacket(packet);
 
         if (packet.module == "Looming.Map")
@@ -1803,6 +1878,66 @@ namespace
     }
 }
 
+void ObserveTerminalTextForVitals(std::wstring_view text)
+{
+    if (text.empty())
+        return;
+
+    bool found = false;
+    double hp = 0.0, maxHp = 0.0, mp = 0.0, maxMp = 0.0;
+
+    {
+        std::lock_guard<std::mutex> lock(g_terminalVitalsMutex);
+        g_terminalVitalsTail.append(text.data(), text.size());
+
+        // 긴 방 설명 전체를 계속 들고 있지 않고, 분할 수신될 수 있는 프롬프트를
+        // 찾기에 충분한 마지막 부분만 유지합니다.
+        constexpr size_t kTailLimit = 4096;
+        if (g_terminalVitalsTail.size() > kTailLimit)
+            g_terminalVitalsTail.erase(0, g_terminalVitalsTail.size() - kTailLimit);
+
+        size_t scan = 0;
+        size_t consumed = 0;
+        while (scan < g_terminalVitalsTail.size())
+        {
+            const size_t open = g_terminalVitalsTail.find(L'[', scan);
+            if (open == std::wstring::npos)
+                break;
+
+            size_t end = 0;
+            double nextHp = 0.0, nextMaxHp = 0.0;
+            double nextMp = 0.0, nextMaxMp = 0.0;
+            if (ParsePlainPromptAt(g_terminalVitalsTail, open, end,
+                nextHp, nextMaxHp, nextMp, nextMaxMp))
+            {
+                hp = nextHp;
+                maxHp = nextMaxHp;
+                mp = nextMp;
+                maxMp = nextMaxMp;
+                found = true;
+                consumed = end;
+                scan = end;
+            }
+            else
+            {
+                scan = open + 1;
+            }
+        }
+
+        if (consumed > 0)
+            g_terminalVitalsTail.erase(0, consumed);
+    }
+
+    if (found)
+        PostTerminalVitalsPacket(hp, maxHp, mp, maxMp);
+}
+
+void ClearTerminalTextVitalsState()
+{
+    std::lock_guard<std::mutex> lock(g_terminalVitalsMutex);
+    g_terminalVitalsTail.clear();
+}
+
 bool PostGmcpPacketFromOsc(std::string_view encoded)
 {
     if (!g_app || !g_app->hwndMain || encoded.empty())
@@ -1822,6 +1957,7 @@ bool PostGmcpPacketFromOsc(std::string_view encoded)
 
     packet->module.assign(decoded.data(), split);
     packet->json.assign(decoded.data() + split + 1, decoded.size() - split - 1);
+
 
     GmcpPacket* raw = packet.release();
     if (!PostMessageW(g_app->hwndMain, WM_APP_GMCP_UPDATE, 0, reinterpret_cast<LPARAM>(raw)))

@@ -27,6 +27,7 @@ void FlushCaptureLogBuffer();
 
 void WriteRunsToCaptureLog(const std::vector<StyledRun>& runs);
 void WriteRawAnsiBytesToCaptureLog(const char* data, size_t len);
+void WritePlainTextToCaptureLog(const std::wstring& text);
 void WriteToChatLog(const std::wstring& text);
 void CloseChatLog();
 

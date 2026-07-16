@@ -124,6 +124,8 @@ public:
     void SelectAndRevealRange(int startX, int startY, int endX, int endY);
     void ClearLog(bool clearAllBuffer);
     void ClearHistory();
+    // 세션 종료/재접속 경계에서 현재 화면을 지우기 전에 스크롤 기록으로 보존한다.
+    void ArchiveCurrentScreenToHistory();
     void SetDefaultColors(COLORREF newBg, COLORREF newFg);
     void RecolorTheme(COLORREF oldBg, COLORREF oldFg, COLORREF newBg, COLORREF newFg, bool (*isKnownBack)(COLORREF));
     void RecolorExistingTheme(COLORREF oldBg, COLORREF oldFg, COLORREF newBg, COLORREF newFg, bool (*isKnownBack)(COLORREF));
@@ -158,6 +160,8 @@ private:
     void ClearCellPairAwareUnlocked(int x, int y);
     void NormalizeCursorForWriteUnlocked();
     void ClearLineRangePairAwareUnlocked(int y, int x1, int x2);
+    bool RowHasVisibleContentUnlocked(int y) const;
+    void ArchiveCurrentScreenToHistoryUnlocked();
     void PutCharUnlocked(wchar_t ch, COLORREF fg, COLORREF bg, bool bold);
     void ScrollUpUnlocked();
     void ClearSelectionUnlocked();

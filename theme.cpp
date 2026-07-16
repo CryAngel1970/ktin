@@ -11,6 +11,7 @@
 #include "log_tail.h"
 #include "gmcp.h"
 #include "numpad.h"
+#include "chat_capture.h"
 #include <commctrl.h>
 #include <algorithm>
 #include <new>
@@ -18,12 +19,40 @@
 #include <memory>
 #include <thread>
 #include <string_view>
+#include <cwctype>
 #include "win_util.h"
 
 namespace
 {
     constexpr size_t kMaxAnsiCsiParamBytes = 128;
     constexpr size_t kMaxAnsiOscParamBytes = 65536;
+    constexpr size_t kSessionBoundaryProbeLimit = 2048;
+
+    bool ContainsSessionBoundaryText(const std::wstring& text)
+    {
+        if (text.empty())
+            return false;
+
+        // KTin 한글화 TinTin++에서 실제로 출력하는 연결 종료/실패/성공 문구.
+        if (text.find(L"세션이 종료되었습니다") != std::wstring::npos ||
+            text.find(L"세션 연결에 실패했습니다") != std::wstring::npos ||
+            text.find(L"세션의 연결 시간이 초과되었습니다") != std::wstring::npos ||
+            (text.find(L"포트에 성공적으로") != std::wstring::npos &&
+             text.find(L"접속되었습니다") != std::wstring::npos))
+            return true;
+
+        std::wstring lower(text);
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lower.find(L"session has been closed") != std::wstring::npos ||
+               lower.find(L"session is closed") != std::wstring::npos ||
+               lower.find(L"session disconnected") != std::wstring::npos ||
+               lower.find(L"connection closed") != std::wstring::npos ||
+               lower.find(L"connection refused") != std::wstring::npos ||
+               lower.find(L"timed out") != std::wstring::npos;
+    }
 }
 
 // ==============================================
@@ -272,7 +301,31 @@ void AnsiToRunsParser::AppendRun(const std::wstring& text)
 
     if (g_app && g_app->termBuffer)
     {
+        // ANSI가 제거된 실제 서버 텍스트를 그대로 관찰합니다. 프롬프트는
+        // TerminalBuffer가 현재 위치에 출력하고, 이 함수는 수치만 분석합니다.
+        ObserveTerminalTextForVitals(text);
+
+        // 일반 갈무리는 ANSI 파서가 제거한 실제 문자만 기록한다.
+        // 코드 갈무리는 ReaderThreadProc에서 원시 바이트를 기록하므로 여기서는 쓰지 않는다.
+        if (g_app->captureLogEnabled && g_app->captureLogOpen && !g_app->captureLogAnsi)
+            WritePlainTextToCaptureLog(text);
+
         g_app->termBuffer->AppendText(text, style_.fg, style_.bg, style_.bold);
+
+        // 2.7.5는 ESC[2J가 도착한 순간에만 화면을 보존했다. 일부 서버는 그 전에
+        // 여러 ESC[K/커서 이동으로 현재 화면을 먼저 지우므로, TinTin++의 세션
+        // 종료·접속 성공 문구가 보이는 즉시 한 번 더 안전하게 스냅샷을 남긴다.
+        sessionBoundaryProbe_ += text;
+        if (sessionBoundaryProbe_.size() > kSessionBoundaryProbeLimit)
+            sessionBoundaryProbe_.erase(0, sessionBoundaryProbe_.size() - kSessionBoundaryProbeLimit);
+
+        if (ContainsSessionBoundaryText(sessionBoundaryProbe_))
+        {
+            g_app->termBuffer->ArchiveCurrentScreenToHistory();
+            FlushCaptureLogBuffer();
+            sessionBoundaryProbe_.clear();
+        }
+
         dirty_ = true;
     }
 }

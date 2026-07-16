@@ -1435,6 +1435,9 @@ void UpdateMenuToggleStates()
     ModifyMenuTextRecursive(g_app->hMainMenu,
         ID_MENU_CAPTURE_TOGGLE,
         g_app->captureLogEnabled ? L"갈무리 켜짐" : L"갈무리 꺼짐");
+    ModifyMenuTextRecursive(g_app->hMainMenu,
+        ID_MENU_CAPTURE_MODE,
+        g_app->captureLogAnsi ? L"코드 갈무리" : L"일반 갈무리");
 
     // 옵션(O) 하위 메뉴 업데이트 (3번째 인덱스)
     HMENU hOptions = GetSubMenu(g_app->hMainMenu, 3);

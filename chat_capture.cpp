@@ -161,6 +161,8 @@ void LoadCaptureLogSettings()
     if (!g_app) return;
     std::wstring path = GetSettingsPath();
     g_app->captureLogEnabled = GetPrivateProfileIntW(L"capture_log", L"enabled", 0, path.c_str()) != 0;
+    // 기존 버전과 같은 동작을 유지하기 위해 기본값은 코드(ANSI 원문) 갈무리다.
+    g_app->captureLogAnsi = GetPrivateProfileIntW(L"capture_log", L"ansi", 1, path.c_str()) != 0;
 }
 
 void SaveCaptureLogSettings()
@@ -169,6 +171,8 @@ void SaveCaptureLogSettings()
     std::wstring path = GetSettingsPath();
     WritePrivateProfileStringW(L"capture_log", L"enabled",
         g_app->captureLogEnabled ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"capture_log", L"ansi",
+        g_app->captureLogAnsi ? L"1" : L"0", path.c_str());
 }
 
 // ==============================================
@@ -186,9 +190,12 @@ void StartCaptureLog()
     std::wstring filePath = logDir;
     if (!filePath.empty() && filePath.back() != L'\\')
         filePath += L'\\';
-    filePath += MakeCaptureLogTimestamp() + L".txt";
+    filePath += MakeCaptureLogTimestamp();
+    filePath += g_app->captureLogAnsi ? L"_ansi.txt" : L"_plain.txt";
 
-    if (g_captureLogWriter.Open(filePath, false, false))
+    // 일반 갈무리는 메모장에서 바로 열기 쉽도록 UTF-8 BOM을 붙이고,
+    // 코드 갈무리는 ESC 바이트 원형 보존을 위해 BOM 없이 기록한다.
+    if (g_captureLogWriter.Open(filePath, false, !g_app->captureLogAnsi))
     {
         g_app->captureLogOpen = true;
         g_app->captureLogPath = filePath;
@@ -218,6 +225,29 @@ void WriteRawAnsiBytesToCaptureLog(const char* data, size_t len)
     if (!g_app || !g_app->captureLogOpen || !data || len == 0)
         return;
     g_captureLogWriter.Write(data, len);
+}
+
+
+void WritePlainTextToCaptureLog(const std::wstring& text)
+{
+    if (!g_app || !g_app->captureLogOpen || g_app->captureLogAnsi || text.empty())
+        return;
+
+    std::wstring clean;
+    clean.reserve(text.size());
+    for (wchar_t ch : text)
+    {
+        // 줄바꿈과 탭은 보존하고, 화면 제어용 C0 문자는 제거한다.
+        if (ch == L'\r' || ch == L'\n' || ch == L'\t' || ch >= 0x20)
+            clean.push_back(ch);
+    }
+
+    if (clean.empty())
+        return;
+
+    const std::string utf8 = WideToUtf8(clean);
+    if (!utf8.empty())
+        g_captureLogWriter.Write(utf8);
 }
 
 void WriteRunsToCaptureLog(const std::vector<StyledRun>& runs)

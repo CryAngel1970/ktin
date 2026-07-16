@@ -317,6 +317,8 @@ void CreateMainMenu(HWND hwnd)
     AddODItem(hMenuTail.Get(), ID_MENU_CAPTURE_TAIL_CUSTOM, L"임시 문자열...");
 
     AddODItem(hMenuCapture.Get(), ID_MENU_CAPTURE_TOGGLE, L"갈무리 꺼짐");
+    AddODItem(hMenuCapture.Get(), ID_MENU_CAPTURE_MODE,
+        (g_app && g_app->captureLogAnsi) ? L"코드 갈무리" : L"일반 갈무리");
     if (HasCaptureTailWindows())
         AddODItem(hMenuCapture.Get(), ID_MENU_CAPTURE_CLOSE_ALL, L"갈무리창 모두 닫기");
     AddODItem(hMenuCapture.Get(), ID_MENU_CAPTURE_OPEN_FOLDER, L"갈무리 폴더 열기");

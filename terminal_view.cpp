@@ -293,23 +293,17 @@ void InvalidateTerminalDirtyRows(HWND hwnd)
     if (state.rows.empty() && state.liveScrollRows <= 0)
         return;
 
-    TerminalBufferMetrics metrics{};
-    SIZE cell{};
-    int offsetX = 0;
-    int offsetY = 0;
-    if (!GetTerminalRowInvalidateLayout(hwnd, metrics, cell, offsetX, offsetY))
-        return;
-
-    if (!state.fullDirty && state.liveScrollRows > 0)
+    /*
+     * 실제 터미널이 위로 스크롤된 경우 ScrollWindowEx로 기존 픽셀을
+     * 복사하면 빠른 출력과 GMCP Cursor 갱신이 겹칠 때 프롬프트가
+     * 두 줄로 보였다가 전체 다시 그리기 후 한 줄이 사라지는 잔상이
+     * 생길 수 있습니다. 버퍼에는 한 번만 들어 있으므로 스크롤 배치마다
+     * 현재 TerminalBuffer 전체를 다시 그리는 편이 정확하고 안전합니다.
+     */
+    if (state.fullDirty || state.liveScrollRows > 0)
     {
-        RECT scrollRc{};
-        scrollRc.left = offsetX;
-        scrollRc.top = offsetY;
-        scrollRc.right = offsetX + metrics.width * cell.cx;
-        scrollRc.bottom = offsetY + metrics.height * cell.cy;
-
-        const int deltaY = -state.liveScrollRows * cell.cy;
-        ScrollWindowEx(hwnd, 0, deltaY, &scrollRc, &scrollRc, nullptr, nullptr, SW_INVALIDATE);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
     }
 
     InvalidateTerminalRows(hwnd, state.rows, FALSE);

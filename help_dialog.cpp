@@ -7,20 +7,31 @@
 #include "theme.h"
 #include "resource.h"
 #include "settings.h"
+#include "app_version.h"
 #include <richedit.h>
 #include <commctrl.h>
 
 static std::wstring BuildHelpPageText(int page);
 
+// 도움말은 ANSI 터미널이 아니라 일반 문서이므로 모든 글자를 한 색으로
+// 표시한다. 제목/구역/키 구분은 크기와 굵기로만 표현한다.
+static constexpr COLORREF kHelpTextColor = RGB(235, 235, 235);
+
 // ==============================================
 // RichEdit 서식 도우미 함수
 // ==============================================
-static void HelpSetCharFormatRange(HWND hEdit, LONG cpMin, LONG cpMax, LONG yHeight, COLORREF color, bool bold)
+static void HelpSelectRange(HWND hEdit, LONG cpMin, LONG cpMax)
 {
     CHARRANGE cr{};
     cr.cpMin = cpMin;
     cr.cpMax = cpMax;
     SendMessageW(hEdit, EM_EXSETSEL, 0, (LPARAM)&cr);
+}
+
+static void HelpSetCharFormatRange(HWND hEdit, LONG cpMin, LONG cpMax,
+                                   LONG yHeight, COLORREF color, bool bold)
+{
+    HelpSelectRange(hEdit, cpMin, cpMax);
 
     CHARFORMAT2W cf{};
     cf.cbSize = sizeof(cf);
@@ -32,96 +43,216 @@ static void HelpSetCharFormatRange(HWND hEdit, LONG cpMin, LONG cpMax, LONG yHei
     SendMessageW(hEdit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
 }
 
+static void HelpSetParagraphFormatRange(HWND hEdit, LONG cpMin, LONG cpMax,
+                                        LONG startIndent, LONG firstLineOffset,
+                                        LONG spaceBefore, LONG spaceAfter,
+                                        LONG tabStop)
+{
+    HelpSelectRange(hEdit, cpMin, cpMax);
+
+    PARAFORMAT2 pf{};
+    pf.cbSize = sizeof(pf);
+    pf.dwMask = PFM_STARTINDENT | PFM_RIGHTINDENT | PFM_OFFSET |
+                PFM_ALIGNMENT | PFM_SPACEBEFORE | PFM_SPACEAFTER |
+                PFM_TABSTOPS;
+    pf.dxStartIndent = startIndent;
+    pf.dxRightIndent = 0;
+    pf.dxOffset = firstLineOffset;
+    pf.wAlignment = PFA_LEFT;
+    pf.dySpaceBefore = spaceBefore;
+    pf.dySpaceAfter = spaceAfter;
+
+    if (tabStop > 0)
+    {
+        pf.cTabCount = 1;
+        pf.rgxTabs[0] = tabStop;
+    }
+    else
+    {
+        pf.cTabCount = 0;
+    }
+
+    SendMessageW(hEdit, EM_SETPARAFORMAT, 0, (LPARAM)&pf);
+}
+
 static LONG HelpFindLineEnd(const std::wstring& text, LONG start)
 {
-    size_t pos = text.find(L"\r\n", (size_t)start);
+    // RichEdit의 문자 위치는 문단 구분자 CR을 한 글자로 센다. 도움말 문자열도
+    // CR 하나만 사용해야 뒤쪽 문단의 색상/들여쓰기 범위가 밀리지 않는다.
+    size_t pos = text.find(L'\r', (size_t)start);
     if (pos == std::wstring::npos)
         return (LONG)text.size();
     return (LONG)pos;
+}
+
+static size_t HelpLeadingSpaces(const std::wstring& line)
+{
+    size_t count = 0;
+    while (count < line.size() && line[count] == L' ')
+        ++count;
+    return count;
+}
+
+static bool HelpIsSectionHeading(const std::wstring& line)
+{
+    size_t first = line.find_first_not_of(L" \t");
+    if (first == std::wstring::npos || line[first] != L'[')
+        return false;
+
+    size_t last = line.find_last_not_of(L" \t");
+    return last != std::wstring::npos && line[last] == L']';
 }
 
 static void SetHelpRichEditText(HWND hEdit, const std::wstring& text)
 {
     HFONT hUiFont = GetPopupUIFont(hEdit);
     SendMessageW(hEdit, WM_SETFONT, (WPARAM)hUiFont, TRUE);
-
+    SendMessageW(hEdit, WM_SETREDRAW, FALSE, 0);
     SetWindowTextW(hEdit, text.c_str());
 
-    // 전체 기본 서식 초기화
-    CHARRANGE all{};
-    all.cpMin = 0;
-    all.cpMax = -1;
-    SendMessageW(hEdit, EM_EXSETSEL, 0, (LPARAM)&all);
+    // 전체 기본 글꼴·색상·문단을 먼저 초기화한다.
+    HelpSelectRange(hEdit, 0, -1);
 
     CHARFORMAT2W base{};
     base.cbSize = sizeof(base);
     base.dwMask = CFM_SIZE | CFM_COLOR | CFM_BOLD;
-    base.yHeight = 220; // 본문
-    base.crTextColor = RGB(235, 235, 235);
+    base.yHeight = 210;
+    base.crTextColor = kHelpTextColor;
     base.dwEffects = 0;
     SendMessageW(hEdit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&base);
 
-    // 내부 여백만 적용
+    HelpSetParagraphFormatRange(hEdit, 0, -1, 0, 0, 0, 70, 0);
+
+    // RichEdit 자체 좌우 여백. 창 크기가 바뀌어도 동일하게 유지한다.
     RECT rc{};
     GetClientRect(hEdit, &rc);
-    rc.left += 14;
-    rc.top += 10;
-    rc.right -= 14;
-    rc.bottom -= 10;
+    rc.left += 18;
+    rc.top += 14;
+    rc.right -= 18;
+    rc.bottom -= 14;
     SendMessageW(hEdit, EM_SETRECTNP, 0, (LPARAM)&rc);
 
-    // 첫 줄 끝 찾기
-    LONG line1Start = 0;
-    LONG line1End = HelpFindLineEnd(text, line1Start);
+    LONG lineStart = 0;
+    int lineIndex = 0;
 
-    // 둘째 줄 찾기
-    LONG line2Start = line1End;
-    if (line2Start < (LONG)text.size() && text.compare((size_t)line2Start, 2, L"\r\n") == 0)
-        line2Start += 2;
-    LONG line2End = HelpFindLineEnd(text, line2Start);
-
-    // 첫 줄: 큰 제목
-    HelpSetCharFormatRange(
-        hEdit,
-        line1Start,
-        line1End,
-        320,
-        RGB(255, 255, 255),
-        true);
-
-    // 둘째 줄이 비어있지 않을 때만 부제 처리
-    if (line2Start < line2End)
+    while (lineStart <= (LONG)text.size())
     {
-        HelpSetCharFormatRange(
-            hEdit,
-            line2Start,
-            line2End,
-            190,
-            RGB(180, 185, 190),
-            false);
+        LONG lineEnd = HelpFindLineEnd(text, lineStart);
+        std::wstring line = text.substr((size_t)lineStart,
+                                        (size_t)(lineEnd - lineStart));
+        LONG paragraphEnd = lineEnd;
+        if (paragraphEnd < (LONG)text.size())
+            paragraphEnd += 1; // RichEdit 문단 구분자 CR도 서식 범위에 포함
+
+        if (lineIndex == 0)
+        {
+            HelpSetCharFormatRange(hEdit, lineStart, lineEnd,
+                                   320, kHelpTextColor, true);
+            HelpSetParagraphFormatRange(hEdit, lineStart, paragraphEnd,
+                                        0, 0, 0, 110, 0);
+        }
+        else if (lineIndex == 1)
+        {
+            HelpSetCharFormatRange(hEdit, lineStart, lineEnd,
+                                   195, kHelpTextColor, false);
+            HelpSetParagraphFormatRange(hEdit, lineStart, paragraphEnd,
+                                        0, 0, 0, 150, 0);
+        }
+        else if (line.empty())
+        {
+            // 빈 문단은 너무 크게 벌어지지 않도록 최소 간격만 둔다.
+            HelpSetParagraphFormatRange(hEdit, lineStart, paragraphEnd,
+                                        0, 0, 0, 20, 0);
+        }
+        else if (HelpIsSectionHeading(line))
+        {
+            HelpSetCharFormatRange(hEdit, lineStart, lineEnd,
+                                   230, kHelpTextColor, true);
+            HelpSetParagraphFormatRange(hEdit, lineStart, paragraphEnd,
+                                        0, 0, 120, 70, 0);
+        }
+        else
+        {
+            size_t tabPos = line.find(L'\t');
+            if (tabPos != std::wstring::npos)
+            {
+                // 첫 열은 키/메뉴명, 둘째 열은 설명이다. 기존에는 문단
+                // 시작 들여쓰기까지 둘째 열 위치로 잡아 첫 열 전체가 오른쪽으로
+                // 밀렸다. 첫 열은 한 단계만 들여쓰고 설명만 고정 탭에 맞춘다.
+                const LONG firstColumnIndent = 180; // 약 12px
+                const LONG descriptionTab = 2550;   // 약 170px
+                HelpSetParagraphFormatRange(hEdit, lineStart, paragraphEnd,
+                                            firstColumnIndent, 0, 0, 55,
+                                            descriptionTab);
+
+                size_t keyStart = line.find_first_not_of(L" \t");
+                if (keyStart != std::wstring::npos && keyStart < tabPos)
+                {
+                    HelpSetCharFormatRange(hEdit,
+                                           lineStart + (LONG)keyStart,
+                                           lineStart + (LONG)tabPos,
+                                           210,
+                                           kHelpTextColor,
+                                           true);
+                }
+            }
+            else
+            {
+                // 원문에 있는 2칸/4칸 공백 자체만 단계 표현으로 사용한다.
+                // 여기에 문단 들여쓰기를 다시 더하면 메뉴명과 설명이 이중으로
+                // 오른쪽에 밀리므로 별도 시작 들여쓰기는 적용하지 않는다.
+                HelpSetParagraphFormatRange(hEdit, lineStart, paragraphEnd,
+                                            0, 0, 0, 65, 0);
+            }
+        }
+
+        if (lineEnd >= (LONG)text.size())
+            break;
+
+        lineStart = lineEnd + 1;
+        ++lineIndex;
     }
 
-    // 나머지 본문
-    LONG bodyStart = line2End;
-    if (bodyStart < (LONG)text.size() && text.compare((size_t)bodyStart, 2, L"\r\n") == 0)
-        bodyStart += 2;
-
-    if (bodyStart < (LONG)text.size())
-    {
-        HelpSetCharFormatRange(
-            hEdit,
-            bodyStart,
-            -1,
-            220,
-            RGB(235, 235, 235),
-            false);
-    }
-
-    SendMessageW(hEdit, EM_SETSEL, 0, 0);
+    HelpSelectRange(hEdit, 0, 0);
     SendMessageW(hEdit, EM_SCROLLCARET, 0, 0);
-    InvalidateRect(hEdit, nullptr, TRUE);
+    SendMessageW(hEdit, WM_SETREDRAW, TRUE, 0);
+    RedrawWindow(hEdit, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_FRAME);
 }
 
+
+// RichEdit가 마우스 휠이나 스크롤바로 이동한 뒤 이전 문단 픽셀을
+// 남기는 경우가 있어, 스크롤 처리가 끝난 다음 편집 영역 전체를 다시 그린다.
+static LRESULT CALLBACK HelpViewSubclassProc(HWND hwnd, UINT msg,
+                                             WPARAM wParam, LPARAM lParam,
+                                             UINT_PTR subclassId,
+                                             DWORD_PTR refData)
+{
+    (void)refData;
+
+    if (msg == WM_NCDESTROY)
+    {
+        RemoveWindowSubclass(hwnd, HelpViewSubclassProc, subclassId);
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
+
+    const bool scrollMessage =
+        msg == WM_MOUSEWHEEL || msg == WM_VSCROLL || msg == WM_HSCROLL ||
+        (msg == WM_KEYDOWN &&
+         (wParam == VK_PRIOR || wParam == VK_NEXT ||
+          wParam == VK_HOME || wParam == VK_END ||
+          wParam == VK_UP || wParam == VK_DOWN));
+
+    LRESULT result = DefSubclassProc(hwnd, msg, wParam, lParam);
+
+    if (scrollMessage)
+    {
+        RedrawWindow(hwnd, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_FRAME);
+    }
+
+    return result;
+}
 
 // ==============================================
 // 도움말 창 프로시저
@@ -143,8 +274,10 @@ static LRESULT CALLBACK ShortcutHelpProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     {
     case WM_CREATE:
     {
-        RECT rc = { 0, 0, 920, 640 };
-        AdjustWindowRectEx(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+        const DWORD helpStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+                                WS_THICKFRAME | WS_MAXIMIZEBOX;
+        RECT rc = { 0, 0, 1080, 680 };
+        AdjustWindowRectEx(&rc, helpStyle, FALSE, WS_EX_DLGMODALFRAME);
         SetWindowPos(hwnd, nullptr, 0, 0, RectWidth(rc), RectHeight(rc), SWP_NOMOVE | SWP_NOZORDER);
 
         ApplyPopupTitleBarTheme(hwnd);
@@ -169,35 +302,39 @@ static LRESULT CALLBACK ShortcutHelpProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         lstrcpyW(lf.lfFaceName, L"맑은 고딕");
         hFontUi = CreateFontIndirectW(&lf);
 
+        const std::wstring helpTitle =
+            L"KTin " + Utf8ToWide(KTIN_APP_VERSION_TEXT_A) +
+            L" : TinTin++ GUI 도움말";
+
         hTitle = CreateWindowExW(
-            0, L"STATIC", L"KTin 2.7 : TinTin++ GUI 도움말",
+            0, L"STATIC", helpTitle.c_str(),
             WS_CHILD | WS_VISIBLE,
-            24, 18, 360, 32,
+            24, 18, 650, 32,
             hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
 
         hSub = CreateWindowExW(
             0, L"STATIC", L"현재 프로그램의 메뉴, 입력창, 메모장과 모든 주요 단축키를 정리했습니다.",
             WS_CHILD | WS_VISIBLE,
-            24, 52, 520, 22,
+            24, 52, 900, 22,
             hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
 
         hList = CreateWindowExW(
             WS_EX_CLIENTEDGE, L"LISTBOX", L"",
             WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL,
-            24, 92, 220, 470,
+            24, 92, 240, 510,
             hwnd, (HMENU)10001, GetModuleHandleW(nullptr), nullptr);
 
         hView = CreateWindowExW(
             WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
-            260, 92, 630, 470,
+            280, 92, 776, 510,
             hwnd, (HMENU)10002, GetModuleHandleW(nullptr), nullptr);
 
         // ★ 닫기 버튼에 &C 추가 (ALT+C 단축키)
         hClose = CreateWindowExW(
             0, L"BUTTON", L"닫기(&C)",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            790, 578, 100, 32,
+            956, 622, 100, 32,
             hwnd, (HMENU)IDCANCEL, GetModuleHandleW(nullptr), nullptr);
 
         SendMessageW(hTitle, WM_SETFONT, (WPARAM)hFontTitle, TRUE);
@@ -207,13 +344,14 @@ static LRESULT CALLBACK ShortcutHelpProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         SendMessageW(hClose, WM_SETFONT, (WPARAM)hFontUi, TRUE);
 
         SendMessageW(hView, EM_SETBKGNDCOLOR, 0, RGB(24, 26, 27));
+        SetWindowSubclass(hView, HelpViewSubclassProc, 1, 0);
 
         RECT rcView{};
         GetClientRect(hView, &rcView);
-        rcView.left += 12;
-        rcView.top += 12;
-        rcView.right -= 12;
-        rcView.bottom -= 12;
+        rcView.left += 18;
+        rcView.top += 14;
+        rcView.right -= 18;
+        rcView.bottom -= 14;
         SendMessageW(hView, EM_SETRECTNP, 0, (LPARAM)&rcView);
 
         const wchar_t* cats[] = {
@@ -254,6 +392,17 @@ static LRESULT CALLBACK ShortcutHelpProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         break;
     }
 
+    case WM_GETMINMAXINFO:
+    {
+        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+        if (mmi)
+        {
+            mmi->ptMinTrackSize.x = 940;
+            mmi->ptMinTrackSize.y = 620;
+        }
+        return 0;
+    }
+
     case WM_SIZE:
     {
         int w = LOWORD(lParam);
@@ -262,7 +411,7 @@ static LRESULT CALLBACK ShortcutHelpProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         const int topY1 = 18;
         const int topY2 = 52;
         const int contentTop = 92;
-        const int leftW = 220;
+        const int leftW = 240;
         const int gap = 16;
         const int btnW = 100;
         const int btnH = 32;
@@ -287,11 +436,13 @@ static LRESULT CALLBACK ShortcutHelpProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         {
             RECT rcView{};
             GetClientRect(hView, &rcView);
-            rcView.left += 14;
-            rcView.top += 10;
-            rcView.right -= 14;
-            rcView.bottom -= 10;
+            rcView.left += 18;
+            rcView.top += 14;
+            rcView.right -= 18;
+            rcView.bottom -= 14;
             SendMessageW(hView, EM_SETRECTNP, 0, (LPARAM)&rcView);
+            RedrawWindow(hView, nullptr, nullptr,
+                         RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_FRAME);
         }
         return 0;
     }
@@ -320,29 +471,43 @@ static LRESULT CALLBACK ShortcutHelpProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         SetBkMode(hdc, TRANSPARENT);
         if (hCtl == hTitle)
         {
-            SetTextColor(hdc, RGB(255, 255, 255));
+            SetTextColor(hdc, kHelpTextColor);
             return (INT_PTR)hbrBack;
         }
         if (hCtl == hSub)
         {
-            SetTextColor(hdc, RGB(180, 185, 190));
+            SetTextColor(hdc, kHelpTextColor);
             return (INT_PTR)hbrBack;
         }
-        SetTextColor(hdc, RGB(220, 220, 220));
+        SetTextColor(hdc, kHelpTextColor);
         return (INT_PTR)hbrBack;
     }
 
     case WM_ERASEBKGND:
     {
         HDC hdc = (HDC)wParam;
-        RECT rc;
+        RECT rc{};
         GetClientRect(hwnd, &rc);
         FillRect(hdc, &rc, hbrBack);
 
-        RECT rcPanelLeft = { 20, 88, 248, 566 };
-        RECT rcPanelRight = { 256, 88, 894, 566 };
-        FillRect(hdc, &rcPanelLeft, hbrPanel);
-        FillRect(hdc, &rcPanelRight, hbrPanel);
+        HWND panels[] = { hList, hView };
+        for (HWND panel : panels)
+        {
+            if (!panel || !IsWindow(panel))
+                continue;
+
+            RECT panelRc{};
+            GetWindowRect(panel, &panelRc);
+            POINT points[2] = {
+                { panelRc.left, panelRc.top },
+                { panelRc.right, panelRc.bottom }
+            };
+            MapWindowPoints(HWND_DESKTOP, hwnd, points, 2);
+            panelRc = { points[0].x, points[0].y,
+                        points[1].x, points[1].y };
+            InflateRect(&panelRc, 4, 4);
+            FillRect(hdc, &panelRc, hbrPanel);
+        }
         return 1;
     }
 
@@ -380,8 +545,8 @@ void ShowShortcutHelp(HWND owner)
         registered = true;
     }
 
-    int w = 920;
-    int h = 640;
+    int w = 1120;
+    int h = 720;
 
     // 부모 창(메인 프로그램)의 위치와 크기 가져오기
     RECT rcOwner = {};
@@ -400,7 +565,8 @@ void ShowShortcutHelp(HWND owner)
         WS_EX_DLGMODALFRAME,
         kClass,
         L"단축키 및 도움말",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+        WS_THICKFRAME | WS_MAXIMIZEBOX | WS_VISIBLE,
         x, y, w, h,
         owner,
         nullptr,
@@ -429,19 +595,104 @@ void ShowShortcutHelp(HWND owner)
 // ==============================================
 // 도움말 페이지 텍스트 생성
 // ==============================================
+static std::wstring HelpTrimRight(std::wstring value)
+{
+    while (!value.empty() && (value.back() == L' ' || value.back() == L'\t'))
+        value.pop_back();
+    return value;
+}
+
+static std::wstring HelpTrim(std::wstring value)
+{
+    value = HelpTrimRight(value);
+    size_t first = value.find_first_not_of(L" \t");
+    if (first == std::wstring::npos)
+        return L"";
+    return value.substr(first);
+}
+
 static std::wstring NormalizeHelpPageText(const wchar_t* text)
 {
-    std::wstring result;
     if (!text)
-        return result;
+        return L"";
 
+    std::wstring source;
     for (const wchar_t* p = text; *p; ++p)
     {
-        if (*p == L'\n')
-            result += L"\r\n";
-        else if (*p != L'\r')
-            result += *p;
+        if (*p != L'\r')
+            source += *p;
     }
+
+    std::wstring result;
+    size_t pos = 0;
+    while (pos <= source.size())
+    {
+        size_t end = source.find(L'\n', pos);
+        if (end == std::wstring::npos)
+            end = source.size();
+
+        std::wstring line = HelpTrimRight(source.substr(pos, end - pos));
+
+        // 같은 단계의 구역 제목은 원문에 공백이 섞여 있어도 항상 첫 열에서
+        // 시작한다. RichEdit 문단 서식이 이전 줄에서 이어지는 것처럼 보이는
+        // 현상도 함께 막는다.
+        if (HelpIsSectionHeading(line))
+            line = HelpTrim(line);
+
+        size_t leading = HelpLeadingSpaces(line);
+
+        // 기존 도움말은 키와 설명을 여러 개의 공백으로 맞췄다. 가변폭
+        // 글꼴에서는 열이 흔들리므로 2칸 이상의 구분 공백을 실제 탭으로
+        // 바꾸고 RichEdit 문단 탭 위치에서 정렬한다.
+        if (leading >= 2 && leading < line.size())
+        {
+            size_t split = std::wstring::npos;
+            size_t splitEnd = std::wstring::npos;
+            for (size_t i = leading + 1; i < line.size(); ++i)
+            {
+                if (line[i] != L' ')
+                    continue;
+
+                size_t j = i;
+                while (j < line.size() && line[j] == L' ')
+                    ++j;
+
+                if (j - i >= 2 && j < line.size())
+                {
+                    split = i;
+                    splitEnd = j;
+                    break;
+                }
+                i = j;
+            }
+
+            if (split != std::wstring::npos)
+            {
+                std::wstring left = HelpTrim(line.substr(leading, split - leading));
+                std::wstring right = HelpTrim(line.substr(splitEnd));
+                if (!left.empty() && !right.empty())
+                    line = left + L"\t" + right;
+            }
+        }
+
+        const std::wstring token = L"{KTIN_VERSION}";
+        size_t tokenPos = 0;
+        const std::wstring version = Utf8ToWide(KTIN_APP_VERSION_TEXT_A);
+        while ((tokenPos = line.find(token, tokenPos)) != std::wstring::npos)
+        {
+            line.replace(tokenPos, token.size(), version);
+            tokenPos += version.size();
+        }
+
+        result += line;
+        if (end < source.size())
+            result += L'\r';
+
+        if (end >= source.size())
+            break;
+        pos = end + 1;
+    }
+
     return result;
 }
 
@@ -452,7 +703,7 @@ static std::wstring BuildHelpPageText(int page)
     default:
     case 0:
         return NormalizeHelpPageText(LR"HELP([기본 / 전체 단축키]
-KTin 2.7의 메인창, 입력창, 로그창에서 바로 사용할 수 있는 고정 단축키입니다.
+KTin {KTIN_VERSION}의 메인창, 입력창, 로그창에서 바로 사용할 수 있는 고정 단축키입니다.
 
 [연결과 프로그램]
   Alt+Q             빠른 연결
@@ -559,7 +810,7 @@ Esc는 취소/닫기로 동작하는 창이 많습니다.)HELP");
   메뉴 숨기기
     상단 메뉴를 감춥니다. 숨긴 상태에서 로그창 우클릭 → 상단 메뉴 보이기로 복구합니다.
   갈무리 >
-    갈무리 켜기/끄기, 갈무리창 모두 닫기, 갈무리 폴더 열기
+    갈무리 켜짐/꺼짐, 코드/일반 갈무리 전환, 갈무리창 모두 닫기, 갈무리 폴더 열기
   갈무리 보기 >
     전체, 잡담, 경매, 대화, 아이템 획득, 경험치, 사용자 1~3, 임시 문자열
   갈무리 필터 설정...
@@ -606,7 +857,7 @@ Esc는 취소/닫기로 동작하는 창이 많습니다.)HELP");
 
 [GMCP]
   정보창 아래 원문 영역에 표시할 수신 모듈을 선택합니다.
-  체력/정신력 막대는 Vitals 또는 Cursor에서 선택 여부와 관계없이 갱신됩니다.)HELP");
+  체력/정신력 막대는 Looming.Vitals 또는 일반 텍스트 프롬프트에서 갱신됩니다.)HELP");
 
     case 5:
         return NormalizeHelpPageText(LR"HELP([입력창 사용법]
@@ -618,7 +869,7 @@ Esc는 취소/닫기로 동작하는 창이 많습니다.)HELP");
   위/아래            입력줄 이동; 끝에서는 이전/다음 명령 기록으로 이동
   왼쪽/오른쪽        커서가 줄 경계일 때 앞/뒤 입력줄로 이동
   Backspace          줄 맨 앞에서 이전 입력줄 끝으로 이동
-                     '현재 행으로 제한' 옵션이 켜져 있으면 줄을 넘지 않음
+    '현재 행으로 제한' 옵션이 켜져 있으면 줄을 넘지 않음
   Home/End           현재 줄의 처음/끝
   Shift+Home/End     커서부터 줄 처음/끝까지 선택
   Ctrl+A             현재 줄 모두 선택
@@ -641,6 +892,7 @@ Esc는 취소/닫기로 동작하는 창이 많습니다.)HELP");
 
 [키보드 탐색]
   PageUp/PageDown    반 화면씩 이동
+    재접속 화면 지우기 전 내용도 스크롤 기록에서 확인
   Ctrl+Home/End      지난 화면 맨 위 / 실시간 화면
   Ctrl+Shift+Home    처음부터 현재 보기 아래까지 선택
   Ctrl+Shift+End     현재 보기 위부터 최신 화면까지 선택
@@ -709,8 +961,11 @@ Esc는 취소/닫기로 동작하는 창이 많습니다.)HELP");
 
 [갈무리]
   보기 → 갈무리 → 갈무리 켜기/끄기
+  보기 → 갈무리 → 코드 갈무리/일반 갈무리 전환
   보기 → 갈무리 → 갈무리 폴더 열기
-  로그 파일은 UTF-8로 기록되며 원문 ANSI도 보존할 수 있습니다.
+  코드 갈무리는 ANSI 원문을 *_ansi.txt에 저장합니다.
+  일반 갈무리는 ANSI를 제거한 문자를 UTF-8 *_plain.txt에 저장합니다.
+  형식은 갈무리 꺼짐 상태에서도 바꿀 수 있고, 켜진 상태에서 바꾸면 새 파일을 시작합니다.
 
 [갈무리 보기]
   전체, 잡담, 경매, 대화, 아이템 획득, 경험치, 사용자 1~3, 임시 문자열
@@ -737,7 +992,7 @@ Sector_D가 보내는 GMCP를 TinTin++가 협상·수신하고 보이지 않는 
 
 [GMCP 정보]
   보기 → GMCP 정보 보기
-  Cursor 또는 Vitals의 현재/최대 체력과 정신력을 퍼센트 막대로 표시합니다.
+  Looming.Vitals 또는 일반 텍스트 프롬프트의 체력과 정신력을 퍼센트 막대로 표시합니다.
   환경설정 GMCP에서 선택한 Char, Combat, Party, Room, System, Info, Chat, Term 등의
   원문은 실제로 그 모듈을 수신한 경우에만 아래 원문 영역에 표시됩니다.
   체크는 서버에 전송을 요구하는 기능이 아니라, 이미 수신한 모듈의 표시 여부입니다.
@@ -750,6 +1005,9 @@ KTin 메모장은 Alt+V로 열며 TinTin++ 스크립트와 일반 문서를 편�
 
 [파일]
   Ctrl+O             열기
+  갈무리 폴더 열기   실행 폴더의 log 폴더 열기
+  마지막 갈무리 열기   최근 수정된 0KB 초과 로그 5개 중 선택
+  Ctrl+W             현재 파일/ANSI 변환 상태 닫기
   Ctrl+S             저장
   Ctrl+Shift+S       다른 이름으로 저장
   Alt+G              TinTin으로 나가기
@@ -760,6 +1018,7 @@ KTin 메모장은 Alt+V로 열며 TinTin++ 스크립트와 일반 문서를 편�
   Ctrl+Z / Ctrl+Y    실행취소 / 다시실행
   Ctrl+X/C/V         잘라내기 / 복사 / 붙여넣기
   Del                 선택 또는 다음 문자 삭제
+  연속되는 빈행 삭제  일반 빈행과 ESC[K 코드 행의 연속 구간을 한 행으로 정리
   Ctrl+A             모두 선택
   Ctrl+Home/End      문서 처음 / 문서 마지막
   Ctrl+PageUp/Down   현재 화면 처음 / 현재 화면 마지막
@@ -796,6 +1055,8 @@ KTin 메모장은 Alt+V로 열며 TinTin++ 스크립트와 일반 문서를 편�
 ASCII/유니코드 지도와 표를 작성하기 위한 기능입니다.
 
 [특수 메뉴]
+  ANSI 코드 제거     터미널 제어 코드와 화면 끝 패딩을 정리해 편집 가능한 새 문서로 표시
+  ANSI 변환 보기     색상·굵기를 적용하고 커서 이동/줄 끝 패딩·ANSI 전용 빈행을 정리한 읽기 전용 화면
   Alt+D              그리기 모드 켜기/끄기
   Ctrl+R             마지막 기호 반복
   자동저장 켜기/끄기

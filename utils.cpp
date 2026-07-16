@@ -492,10 +492,21 @@ std::wstring GetEditTextW(HWND hEdit)
 
 std::wstring GetWindowTextString(HWND hwnd)
 {
-    int len = GetWindowTextLengthW(hwnd);
-    std::wstring s(len, 0);
-    GetWindowTextW(hwnd, &s[0], len + 1);
-    return s;
+    if (!hwnd)
+        return L"";
+
+    const int len = GetWindowTextLengthW(hwnd);
+    if (len <= 0)
+        return L"";
+
+    // 종료 NUL 공간까지 확보한 뒤 실제 길이만 남긴다.
+    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
+    const int copied = GetWindowTextW(hwnd, text.data(), len + 1);
+    if (copied <= 0)
+        return L"";
+
+    text.resize(static_cast<size_t>(copied));
+    return text;
 }
 
 // ==============================================
@@ -1678,15 +1689,6 @@ void UnloadEmbeddedFont()
     }
 }
 
-#if KTIN_APP_VER_ALPHA_INDEX <= 0
-static std::wstring FormatKtinVersion(int major, int minor, int build)
-{
-    wchar_t verStr[64] = { 0 };
-    wsprintfW(verStr, L"%d.%d.%02d", major, minor, build);
-    return std::wstring(verStr);
-}
-#endif
-
 static std::wstring FormatTinTinVersion(int major, int minor, int patch, int build)
 {
     wchar_t verStr[64] = { 0 };
@@ -1696,16 +1698,10 @@ static std::wstring FormatTinTinVersion(int major, int minor, int patch, int bui
 
 std::wstring GetAppVersionString()
 {
-#if KTIN_APP_VER_ALPHA_INDEX > 0
-    wchar_t verStr[64] = { 0 };
-    wsprintfW(verStr, L"%d.%d-a%02d",
-        KTIN_APP_VER_MAJOR,
-        KTIN_APP_VER_MINOR,
-        KTIN_APP_VER_ALPHA_INDEX);
-    return std::wstring(verStr);
-#else
-    return FormatKtinVersion(KTIN_APP_VER_MAJOR, KTIN_APP_VER_MINOR, KTIN_APP_VER_BUILD);
-#endif
+    // 정보창, 메인 제목, 트레이 도움말과 리소스가 모두 app_version.h의
+    // 동일한 표시 문자열을 사용하도록 한다. 이전 코드는 PATCH를 무시하고
+    // BUILD를 두 자리로 출력하여 2.7.8이 2.7.00으로 보였다.
+    return Utf8ToWide(KTIN_APP_VERSION_TEXT_A);
 }
 
 std::wstring GetTinTinVersionString()

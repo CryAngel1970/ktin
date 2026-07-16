@@ -261,6 +261,12 @@ bool HandleMainTimer(HWND hwnd, WPARAM timerId)
         KillWinTimer(hwnd, ID_TIMER_AUTORECONNECT);
         if (g_app && g_app->hasActiveSession && g_app->activeSession.autoReconnect)
         {
+            // 자동 재접속 명령이 기존 화면을 덮기 전에 마지막 전투·사망·세션 종료
+            // 화면을 스크롤 기록과 갈무리 파일에 확정한다.
+            if (g_app->termBuffer)
+                g_app->termBuffer->ArchiveCurrentScreenToHistory();
+            FlushCaptureLogBuffer();
+
             // 현재 창이 보관한 주소록 사본만 사용합니다. 끊어진 세션과 같은
             // 이름을 재사용하지 않고 정리 후 새 고유 내부 세션으로 접속합니다.
             AddressBookEntry entry = g_app->activeSession;
@@ -979,6 +985,10 @@ bool HandleMainInitMenuPopup(HMENU menu)
                 g_app->captureLogEnabled ? L"갈무리 켜짐" : L"갈무리 꺼짐");
     CheckMenuItem(menu, ID_MENU_CAPTURE_TOGGLE,
                   MF_BYCOMMAND | (g_app->captureLogEnabled ? MF_CHECKED : MF_UNCHECKED));
+    ModifyMenuW(menu, ID_MENU_CAPTURE_MODE, MF_BYCOMMAND | MF_STRING,
+                ID_MENU_CAPTURE_MODE,
+                g_app->captureLogAnsi ? L"코드 갈무리" : L"일반 갈무리");
+    CheckMenuItem(menu, ID_MENU_CAPTURE_MODE, MF_BYCOMMAND | MF_CHECKED);
     return true;
 }
 
@@ -1246,7 +1256,7 @@ bool HandleMainClose(HWND hwnd)
 
 bool HandleMainProcessExit(HWND hwnd)
 {
-    (void)hwnd;
+    ClearTerminalTextVitalsState();
 
     if (g_app && !g_app->shuttingDown && g_app->hwndInput)
         EnableWindow(g_app->hwndInput, FALSE);
@@ -1501,6 +1511,25 @@ switch (LOWORD(wParam))
                     StartCaptureLog();
                 else
                     StopCaptureLog();
+                SaveCaptureLogSettings();
+                UpdateMenuToggleStates();
+            }
+            return true;
+        }
+        case ID_MENU_CAPTURE_MODE:
+        {
+            if (g_app)
+            {
+                g_app->captureLogAnsi = !g_app->captureLogAnsi;
+
+                // 켜진 상태에서 형식을 바꾸면 한 파일 안에 ANSI 원문과 일반 텍스트가
+                // 섞이지 않도록 현재 파일을 닫고 새 형식 파일을 즉시 시작한다.
+                if (g_app->captureLogEnabled)
+                {
+                    StopCaptureLog();
+                    StartCaptureLog();
+                }
+
                 SaveCaptureLogSettings();
                 UpdateMenuToggleStates();
             }

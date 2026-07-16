@@ -50,6 +50,12 @@ struct MemoState
     bool loadingFile = false;
 
     bool showFormatMarks = false;
+
+    // ANSI 변환 보기는 원본 로그를 보호하기 위해 읽기 전용으로 표시한다.
+    bool ansiPreviewMode = false;
+    std::wstring ansiSourcePath;
+    // 원본 ANSI 로그를 보존한다. RichEdit에 표시한 뒤에도 다시 변환/제거할 수 있다.
+    std::wstring ansiRawText;
 };
 
 

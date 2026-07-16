@@ -248,6 +248,7 @@ static const int ID_MEMO_EDIT_COPY = 4830;
 static const int ID_MEMO_EDIT_PASTE = 4831;
 static const int ID_MEMO_EDIT_DELETE = 4832;
 static const int ID_MEMO_EDIT_SELECTALL = 4833;
+static const int ID_MEMO_EDIT_COLLAPSE_BLANK_LINES = 4878;
 // 메뉴바 호출용 ID
 static const int ID_MENU_EDIT_TIMER = 4838;
 
@@ -315,6 +316,14 @@ static const int ID_MEMO_SYNTAX_THEME_GITHUB_DARK = 4918;
 static const int ID_MEMO_FORMAT_SYNTAX_LANG_TINTIN = 4950;
 static const int ID_MEMO_FORMAT_SYNTAX_LANG_CPP = 4951;
 static const int ID_MEMO_FORMAT_SYNTAX_LANG_CSHARP = 4952;
+
+// 메모장 갈무리/ANSI 도구
+static const int ID_MEMO_FILE_OPEN_CAPTURE_FOLDER = 4960;
+static const int ID_MEMO_FILE_RECENT_CAPTURE_BASE = 4961; // 4961~4965
+static const int ID_MEMO_FILE_RECENT_CAPTURE_EMPTY = 4966;
+static const int ID_MEMO_FILE_CLOSE_CURRENT = 4967;
+static const int ID_MEMO_SPECIAL_STRIP_ANSI = 4980;
+static const int ID_MEMO_SPECIAL_PREVIEW_ANSI = 4981;
 
 static const int ID_MENU_SETTINGS = 5000;
 static const int ID_SETTING_LIST = 5001;
@@ -527,6 +536,7 @@ static const int ID_ABBR_GLOBAL_ENABLE = 9508;
 static const int ID_MENU_CAPTURE_TOGGLE          = 13200;
 static const int ID_MENU_CAPTURE_OPEN_FOLDER     = 13201;
 static const int ID_MENU_CAPTURE_CLOSE_ALL       = 13202;
+static const int ID_MENU_CAPTURE_MODE            = 13203;
 static const int ID_MENU_CAPTURE_TAIL_ALL        = 13210;
 static const int ID_MENU_CAPTURE_TAIL_CHAT       = 13211;
 static const int ID_MENU_CAPTURE_TAIL_AUCTION    = 13212;

@@ -5,6 +5,7 @@
 #include "theme.h"
 #include "utils.h"
 #include "chat_capture.h"
+#include "gmcp.h"
 #include "win_util.h"
 
 #include <algorithm>
@@ -96,7 +97,7 @@ void ReaderThreadProc(HWND hwndMain, HANDLE hRead)
 
         if (g_app && read > 0 && (g_app->captureLogEnabled || g_app->chatCaptureEnabled))
         {
-            if (g_app->captureLogEnabled && g_app->captureLogOpen)
+            if (g_app->captureLogEnabled && g_app->captureLogOpen && g_app->captureLogAnsi)
                 WriteRawAnsiBytesToCaptureLog(buffer, read);
 
             const size_t kMaxCur = 256 * 1024;

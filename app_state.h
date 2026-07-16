@@ -84,6 +84,8 @@ struct AppState
     int historyBrowseIndex = -1;
     bool saveInputOnExit = false;
     bool captureLogEnabled = false;
+    // true: ANSI 제어 코드를 포함한 원문 저장, false: ANSI를 제거한 일반 텍스트 저장
+    bool captureLogAnsi = true;
     bool chatCaptureEnabled = false;
     bool captureLogOpen = false;
     std::wstring captureLogPath;

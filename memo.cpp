@@ -11,10 +11,15 @@
 #include "settings.h"
 #include "dialogs.h"
 #include "win_util.h"
+#include "log_tail.h"
+#include "chat_capture.h"
 #include <richedit.h>
 #include <commctrl.h>
 #include <fstream>
 #include <algorithm>
+#include <utility>
+#include <shellapi.h>
+#include <cwctype>
 
 // 전역 변수 정의
 MemoState g_memo;
@@ -55,7 +60,16 @@ struct MemoColWidthState {
 };
 
 static void MemoRebuildRecentMenu(HWND hwnd);
+static void MemoRebuildRecentCaptureMenu();
 static bool HandleMemoShortcutKey(UINT msg, WPARAM wParam);
+static void MemoStripAnsiCodes(HWND hwnd);
+static void MemoShowAnsiPreview(HWND hwnd);
+static std::wstring MemoGetAnsiSourceText();
+static bool MemoCloseCurrentDocument(HWND hwnd);
+
+static HMENU s_hMemoRecentCaptureMenu = nullptr;
+static std::vector<std::wstring> s_recentCapturePaths;
+static std::wstring s_recentCaptureLabels[5];
 
 static LineSet g_lineSets[] = 
 {
@@ -331,7 +345,851 @@ static void UpdateMemoMenuState(HWND hwnd)
     ModifyMenuW(hMenu, ID_MEMO_VIEW_FORMATMARKS, MF_BYCOMMAND | MF_OWNERDRAW,
         ID_MEMO_VIEW_FORMATMARKS, (LPCWSTR)buf_marks);
 
+    const UINT saveState = MF_BYCOMMAND |
+        (g_memo.ansiPreviewMode ? MF_GRAYED : MF_ENABLED);
+    EnableMenuItem(hMenu, ID_MEMO_FILE_SAVE, saveState);
+    EnableMenuItem(hMenu, ID_MEMO_FILE_SAVEAS, saveState);
+    EnableMenuItem(hMenu, ID_MEMO_EDIT_COLLAPSE_BLANK_LINES, saveState);
+
+    const bool hasCurrentDocument =
+        !g_memo.currentPath.empty() ||
+        !g_memo.ansiSourcePath.empty() ||
+        !g_memo.ansiRawText.empty() ||
+        (g_memo.hwndEdit && GetWindowTextLengthW(g_memo.hwndEdit) > 0);
+    EnableMenuItem(hMenu, ID_MEMO_FILE_CLOSE_CURRENT,
+        MF_BYCOMMAND | (hasCurrentDocument ? MF_ENABLED : MF_GRAYED));
+
     DrawMenuBar(hwnd);
+}
+
+
+struct MemoCaptureFile
+{
+    std::wstring path;
+    std::wstring name;
+    FILETIME writeTime{};
+    unsigned long long size = 0;
+};
+
+static std::wstring MemoCaptureLogDirectory()
+{
+    std::wstring dir = MakeAbsolutePath(GetModuleDirectory(), L"log");
+    if (!CreateDirectoryW(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return L"";
+    return dir;
+}
+
+static std::vector<MemoCaptureFile> MemoFindRecentCaptureFiles()
+{
+    // 현재 갈무리가 켜져 있으면 비동기 버퍼를 먼저 디스크에 반영한다.
+    FlushCaptureLogBuffer();
+
+    std::vector<MemoCaptureFile> files;
+    std::wstring dir = MemoCaptureLogDirectory();
+    if (dir.empty())
+        return files;
+
+    std::wstring pattern = dir;
+    if (!pattern.empty() && pattern.back() != L'\\')
+        pattern += L'\\';
+    pattern += L"*";
+
+    WIN32_FIND_DATAW fd{};
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return files;
+
+    do
+    {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+            continue;
+
+        const unsigned long long size =
+            (static_cast<unsigned long long>(fd.nFileSizeHigh) << 32) |
+            static_cast<unsigned long long>(fd.nFileSizeLow);
+        if (size == 0)
+            continue;
+
+        MemoCaptureFile item;
+        item.name = fd.cFileName;
+        item.path = dir;
+        if (!item.path.empty() && item.path.back() != L'\\')
+            item.path += L'\\';
+        item.path += fd.cFileName;
+        item.writeTime = fd.ftLastWriteTime;
+        item.size = size;
+        files.push_back(std::move(item));
+    } while (FindNextFileW(hFind, &fd));
+
+    FindClose(hFind);
+
+    std::sort(files.begin(), files.end(), [](const MemoCaptureFile& a, const MemoCaptureFile& b) {
+        return CompareFileTime(&a.writeTime, &b.writeTime) > 0;
+    });
+
+    if (files.size() > 5)
+        files.resize(5);
+    return files;
+}
+
+static std::wstring MemoFormatCaptureMenuLabel(int index, const MemoCaptureFile& file)
+{
+    FILETIME localFt{};
+    SYSTEMTIME st{};
+    FileTimeToLocalFileTime(&file.writeTime, &localFt);
+    FileTimeToSystemTime(&localFt, &st);
+
+    wchar_t timeBuf[64]{};
+    _snwprintf_s(timeBuf, _countof(timeBuf), _TRUNCATE,
+        L"%04u-%02u-%02u %02u:%02u",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+
+    const unsigned long long kb = (file.size + 1023ULL) / 1024ULL;
+    wchar_t label[1024]{};
+    _snwprintf_s(label, _countof(label), _TRUNCATE,
+        L"&%d. %s  (%s, %lluKB)",
+        index + 1, file.name.c_str(), timeBuf, kb);
+    return label;
+}
+
+static void MemoRebuildRecentCaptureMenu()
+{
+    if (!s_hMemoRecentCaptureMenu || !IsMenu(s_hMemoRecentCaptureMenu))
+        return;
+
+    while (GetMenuItemCount(s_hMemoRecentCaptureMenu) > 0)
+        DeleteMenu(s_hMemoRecentCaptureMenu, 0, MF_BYPOSITION);
+
+    s_recentCapturePaths.clear();
+    const std::vector<MemoCaptureFile> files = MemoFindRecentCaptureFiles();
+    if (files.empty())
+    {
+        static const wchar_t emptyText[] = L"0KB가 아닌 갈무리 파일이 없습니다";
+        AppendMenuW(s_hMemoRecentCaptureMenu,
+            MF_OWNERDRAW | MF_STRING | MF_GRAYED,
+            ID_MEMO_FILE_RECENT_CAPTURE_EMPTY,
+            emptyText);
+        return;
+    }
+
+    for (size_t i = 0; i < files.size() && i < 5; ++i)
+    {
+        s_recentCapturePaths.push_back(files[i].path);
+        s_recentCaptureLabels[i] = MemoFormatCaptureMenuLabel(static_cast<int>(i), files[i]);
+        AppendMenuW(s_hMemoRecentCaptureMenu,
+            MF_OWNERDRAW | MF_STRING,
+            ID_MEMO_FILE_RECENT_CAPTURE_BASE + static_cast<UINT>(i),
+            s_recentCaptureLabels[i].c_str());
+    }
+}
+
+static std::vector<int> MemoParseAnsiParams(const std::wstring& params)
+{
+    std::vector<int> nums;
+    int value = 0;
+    bool have = false;
+    for (wchar_t ch : params)
+    {
+        if (ch >= L'0' && ch <= L'9')
+        {
+            value = value * 10 + (ch - L'0');
+            have = true;
+        }
+        else if (ch == L';' || ch == L':')
+        {
+            nums.push_back(have ? value : 0);
+            value = 0;
+            have = false;
+        }
+    }
+    nums.push_back(have ? value : 0);
+    return nums;
+}
+
+static COLORREF MemoAnsiColor256(int idx)
+{
+    if (idx < 0) idx = 0;
+    if (idx > 255) idx = 255;
+    if (idx < 16)
+        return BaseAnsi16(idx);
+    if (idx >= 232)
+    {
+        const int gray = 8 + (idx - 232) * 10;
+        return RGB(gray, gray, gray);
+    }
+
+    idx -= 16;
+    const int r = idx / 36;
+    const int g = (idx / 6) % 6;
+    const int b = idx % 6;
+    static const int steps[6] = { 0, 95, 135, 175, 215, 255 };
+    return RGB(steps[r], steps[g], steps[b]);
+}
+
+static size_t MemoCurrentLineStart(const std::wstring& text)
+{
+    const size_t pos = text.find_last_of(L"\r\n");
+    return (pos == std::wstring::npos) ? 0 : pos + 1;
+}
+
+static void MemoTrimCurrentLinePadding(std::wstring& text)
+{
+    const size_t lineStart = MemoCurrentLineStart(text);
+    while (text.size() > lineStart &&
+        (text.back() == L' ' || text.back() == L'\t'))
+    {
+        text.pop_back();
+    }
+}
+
+static bool MemoCurrentLineHasVisibleText(const std::wstring& text)
+{
+    // ANSI 변환 보기에서는 화면 채움용 공백 앞뒤의 SGR 코드(ESC[...m)가
+    // 정규화 결과에 남을 수 있다. 이 코드를 실제 글자로 판단하면 커서 이동
+    // 처리에서 불필요한 논리 줄바꿈이 추가되어 전투 메시지 사이마다 빈행이
+    // 생긴다. 현재 논리 행의 SGR/CSI 제어 시퀀스와 공백을 건너뛰고 실제로
+    // 표시될 문자가 있는지만 확인한다.
+    const size_t lineStart = MemoCurrentLineStart(text);
+    size_t i = lineStart;
+
+    while (i < text.size())
+    {
+        const wchar_t ch = text[i];
+
+        if (ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n')
+        {
+            ++i;
+            continue;
+        }
+
+        if (ch == 0x1B && i + 1 < text.size() && text[i + 1] == L'[')
+        {
+            i += 2;
+            while (i < text.size())
+            {
+                const wchar_t c = text[i++];
+                if (c >= 0x40 && c <= 0x7E)
+                    break;
+            }
+            continue;
+        }
+
+        if (ch == 0x9B)
+        {
+            ++i;
+            while (i < text.size())
+            {
+                const wchar_t c = text[i++];
+                if (c >= 0x40 && c <= 0x7E)
+                    break;
+            }
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+static void MemoAppendLogicalNewline(std::wstring& text)
+{
+    MemoTrimCurrentLinePadding(text);
+    text += L"\r\n";
+}
+
+static std::wstring MemoNormalizeCapturedAnsi(
+    const std::wstring& src,
+    bool keepSgr)
+{
+    std::wstring out;
+    out.reserve(src.size());
+
+    enum class State { Normal, Esc, Csi, Osc, OscEsc, String, StringEsc };
+    State state = State::Normal;
+
+    std::wstring params;
+    std::wstring pendingSgr;
+    bool pendingCarriageReturn = false;
+    int cursorRow = 1;
+    bool cursorKnown = false;
+
+    auto emitPrintable = [&](wchar_t ch) {
+        if (pendingCarriageReturn)
+        {
+            if (MemoCurrentLineHasVisibleText(out))
+                MemoAppendLogicalNewline(out);
+            pendingCarriageReturn = false;
+        }
+
+        if (!pendingSgr.empty())
+        {
+            out += pendingSgr;
+            pendingSgr.clear();
+        }
+
+        out.push_back(ch);
+    };
+
+    for (wchar_t ch : src)
+    {
+        switch (state)
+        {
+        case State::Normal:
+            if (ch == 0x1B)
+            {
+                state = State::Esc;
+            }
+            else if (ch == 0x9B)
+            {
+                params.clear();
+                state = State::Csi;
+            }
+            else if (ch == 0x9D)
+            {
+                state = State::Osc;
+            }
+            else if (ch == L'\r')
+            {
+                MemoTrimCurrentLinePadding(out);
+                pendingCarriageReturn = true;
+            }
+            else if (ch == L'\n')
+            {
+                pendingCarriageReturn = false;
+                MemoAppendLogicalNewline(out);
+                ++cursorRow;
+                cursorKnown = true;
+            }
+            else if (ch >= 0x20 || ch == L'\t')
+            {
+                emitPrintable(ch);
+            }
+            break;
+
+        case State::Esc:
+            if (ch == L'[')
+            {
+                params.clear();
+                state = State::Csi;
+            }
+            else if (ch == L']')
+            {
+                state = State::Osc;
+            }
+            else if (ch == L'P' || ch == L'_' || ch == L'^')
+            {
+                state = State::String;
+            }
+            else
+            {
+                state = State::Normal;
+            }
+            break;
+
+        case State::Csi:
+            if ((ch >= L'0' && ch <= L'9') ||
+                ch == L';' || ch == L':' || ch == L'?' ||
+                ch == L'>' || ch == L'<' || ch == L'=')
+            {
+                if (params.size() < 256)
+                    params.push_back(ch);
+            }
+            else if (ch >= 0x40 && ch <= 0x7E)
+            {
+                if (ch == L'm')
+                {
+                    if (keepSgr)
+                    {
+                        pendingSgr.push_back(0x1B);
+                        pendingSgr += L"[";
+                        pendingSgr += params;
+                        pendingSgr += L"m";
+                    }
+                }
+                else if (ch == L'H' || ch == L'f')
+                {
+                    MemoTrimCurrentLinePadding(out);
+                    const std::vector<int> nums = MemoParseAnsiParams(params);
+                    const int row = (!nums.empty() && nums[0] > 0) ? nums[0] : 1;
+                    const int col = (nums.size() > 1 && nums[1] > 0) ? nums[1] : 1;
+
+                    if (cursorKnown && row != cursorRow && col == 1 &&
+                        MemoCurrentLineHasVisibleText(out))
+                    {
+                        MemoAppendLogicalNewline(out);
+                    }
+
+                    cursorRow = row;
+                        cursorKnown = true;
+                }
+                else if (ch == L'G' || ch == L'K' || ch == L'J' ||
+                    ch == L'X' || ch == L'A' || ch == L'B' ||
+                    ch == L'C' || ch == L'D' || ch == L'd' ||
+                    ch == L'E' || ch == L'F' || ch == L's' ||
+                    ch == L'u' || ch == L'P' || ch == L'@')
+                {
+                    // 갈무리에는 화면 끝까지 채운 공백 뒤에 커서 이동/지우기
+                    // 시퀀스가 자주 붙는다. 화면 재생용 공백을 텍스트 로그에
+                    // 남기지 않도록 현재 논리 행의 끝 공백을 정리한다.
+                    MemoTrimCurrentLinePadding(out);
+                }
+
+                state = State::Normal;
+            }
+            else
+            {
+                state = State::Normal;
+            }
+            break;
+
+        case State::Osc:
+            if (ch == 0x07)
+            {
+                state = State::Normal;
+            }
+            else if (ch == 0x1B)
+            {
+                state = State::OscEsc;
+            }
+            break;
+
+        case State::OscEsc:
+            if (ch == L'\\')
+            {
+                state = State::Normal;
+            }
+            else if (ch == L'[')
+            {
+                params.clear();
+                state = State::Csi;
+            }
+            else if (ch == L']')
+            {
+                state = State::Osc;
+            }
+            else if (ch == L'P' || ch == L'_' || ch == L'^')
+            {
+                state = State::String;
+            }
+            else
+            {
+                state = State::Normal;
+            }
+            break;
+
+        case State::String:
+            if (ch == 0x1B)
+                state = State::StringEsc;
+            break;
+
+        case State::StringEsc:
+            state = (ch == L'\\') ? State::Normal : State::String;
+            break;
+        }
+    }
+
+    MemoTrimCurrentLinePadding(out);
+
+    // 화면 지우기/고정 높이 패딩 때문에 생긴 과도한 공백 행은 한 줄만
+    // 남긴다. SGR은 실제 글자 직전에만 기록했으므로 빈 행 판별을 방해하지 않는다.
+    const std::wstring threeBreaks = L"\r\n\r\n\r\n";
+    const std::wstring twoBreaks = L"\r\n\r\n";
+    size_t pos = 0;
+    while ((pos = out.find(threeBreaks, pos)) != std::wstring::npos)
+        out.replace(pos, threeBreaks.size(), twoBreaks);
+
+    while (out.size() >= 2 && out.compare(0, 2, L"\r\n") == 0)
+        out.erase(0, 2);
+    while (out.size() >= 2 &&
+        out.compare(out.size() - 2, 2, L"\r\n") == 0)
+        out.erase(out.size() - 2);
+
+    return out;
+}
+
+static std::wstring MemoStripAnsi(const std::wstring& src)
+{
+    return MemoNormalizeCapturedAnsi(src, false);
+}
+
+static void MemoFlushAnsiRun(std::vector<StyledRun>& runs, std::wstring& text,
+    const TextStyle& baseStyle, bool inverse)
+{
+    if (text.empty())
+        return;
+
+    TextStyle style = baseStyle;
+    if (inverse)
+        std::swap(style.fg, style.bg);
+
+    if (!runs.empty() && runs.back().style == style)
+        runs.back().text += text;
+    else
+        runs.push_back({ style, text });
+    text.clear();
+}
+
+static std::vector<StyledRun> MemoAnsiToRuns(const std::wstring& src)
+{
+    std::vector<StyledRun> runs;
+    COLORREF defaultFg = g_app ? g_app->logStyle.textColor : RGB(220, 220, 220);
+    const COLORREF defaultBg = g_app ? g_app->logStyle.backColor : RGB(0, 0, 0);
+
+    // 설정 조합에 따라 기본 글자색과 배경색이 같아지면 선택 반전 때만
+    // 보이는 문제가 생긴다. 배경 명도에 맞는 대비색을 보장한다.
+    if (defaultFg == defaultBg)
+    {
+        const int luminance =
+            (GetRValue(defaultBg) * 299 +
+             GetGValue(defaultBg) * 587 +
+             GetBValue(defaultBg) * 114) / 1000;
+        defaultFg = (luminance < 128) ? RGB(230, 230, 230) : RGB(20, 20, 20);
+    }
+    const COLORREF* table = GetAnsiThemeTable(g_app ? g_app->ansiTheme : ID_THEME_CAMPBELL);
+
+    TextStyle style{ defaultFg, defaultBg, false };
+    int fgBase = -1;
+    int bgBase = -1;
+    bool inverse = false;
+    std::wstring text;
+    std::wstring params;
+
+    enum class State { Normal, Esc, Csi, Osc, OscEsc, String, StringEsc };
+    State state = State::Normal;
+
+    auto baseColor = [&](int idx) -> COLORREF {
+        if (idx < 0) idx = 0;
+        if (idx > 15) idx = 15;
+        return table[idx];
+    };
+    auto resetStyle = [&]() {
+        style = { defaultFg, defaultBg, false };
+        fgBase = -1;
+        bgBase = -1;
+        inverse = false;
+    };
+
+    for (wchar_t ch : src)
+    {
+        switch (state)
+        {
+        case State::Normal:
+            if (ch == 0x1B)
+            {
+                MemoFlushAnsiRun(runs, text, style, inverse);
+                state = State::Esc;
+            }
+            else if (ch == 0x9B)
+            {
+                MemoFlushAnsiRun(runs, text, style, inverse);
+                params.clear();
+                state = State::Csi;
+            }
+            else if (ch == 0x9D)
+            {
+                MemoFlushAnsiRun(runs, text, style, inverse);
+                state = State::Osc;
+            }
+            else if (ch >= 0x20 || ch == L'\t' || ch == L'\r' || ch == L'\n')
+                text.push_back(ch);
+            break;
+
+        case State::Esc:
+            if (ch == L'[')
+            {
+                params.clear();
+                state = State::Csi;
+            }
+            else if (ch == L']') state = State::Osc;
+            else if (ch == L'P' || ch == L'_' || ch == L'^') state = State::String;
+            else state = State::Normal;
+            break;
+
+        case State::Csi:
+            if ((ch >= L'0' && ch <= L'9') || ch == L';' || ch == L':')
+            {
+                if (params.size() < 256)
+                    params.push_back(ch);
+            }
+            else if (ch >= 0x40 && ch <= 0x7E)
+            {
+                if (ch == L'm')
+                {
+                    const std::vector<int> nums = MemoParseAnsiParams(params.empty() ? L"0" : params);
+                    for (size_t i = 0; i < nums.size(); ++i)
+                    {
+                        const int n = nums[i];
+                        if (n == 0) resetStyle();
+                        else if (n == 1)
+                        {
+                            style.bold = true;
+                            if (fgBase >= 0 && fgBase <= 7) style.fg = baseColor(fgBase + 8);
+                        }
+                        else if (n == 22)
+                        {
+                            style.bold = false;
+                            if (fgBase >= 0 && fgBase <= 7) style.fg = baseColor(fgBase);
+                        }
+                        else if (n == 7) inverse = true;
+                        else if (n == 27) inverse = false;
+                        else if (n >= 30 && n <= 37)
+                        {
+                            fgBase = n - 30;
+                            style.fg = baseColor(fgBase + (style.bold ? 8 : 0));
+                        }
+                        else if (n >= 90 && n <= 97)
+                        {
+                            fgBase = n - 90;
+                            style.fg = baseColor(fgBase + 8);
+                        }
+                        else if (n == 39)
+                        {
+                            fgBase = -1;
+                            style.fg = defaultFg;
+                        }
+                        else if (n >= 40 && n <= 47)
+                        {
+                            bgBase = n - 40;
+                            style.bg = baseColor(bgBase);
+                        }
+                        else if (n >= 100 && n <= 107)
+                        {
+                            bgBase = n - 100;
+                            style.bg = baseColor(bgBase + 8);
+                        }
+                        else if (n == 49)
+                        {
+                            bgBase = -1;
+                            style.bg = defaultBg;
+                        }
+                        else if ((n == 38 || n == 48) && i + 1 < nums.size())
+                        {
+                            const bool foreground = (n == 38);
+                            if (nums[i + 1] == 5 && i + 2 < nums.size())
+                            {
+                                const COLORREF c = MemoAnsiColor256(nums[i + 2]);
+                                if (foreground) { style.fg = c; fgBase = -1; }
+                                else { style.bg = c; bgBase = -1; }
+                                i += 2;
+                            }
+                            else if (nums[i + 1] == 2 && i + 4 < nums.size())
+                            {
+                                const int r = std::max(0, std::min(255, nums[i + 2]));
+                                const int g = std::max(0, std::min(255, nums[i + 3]));
+                                const int b = std::max(0, std::min(255, nums[i + 4]));
+                                const COLORREF c = RGB(r, g, b);
+                                if (foreground) { style.fg = c; fgBase = -1; }
+                                else { style.bg = c; bgBase = -1; }
+                                i += 4;
+                            }
+                        }
+                    }
+                }
+                state = State::Normal;
+            }
+            break;
+
+        case State::Osc:
+            if (ch == 0x07) state = State::Normal;
+            else if (ch == 0x1B) state = State::OscEsc;
+            break;
+
+        case State::OscEsc:
+            // 정상 OSC 종료는 ESC \ 이지만, 실제 갈무리에는 종료문자 없이
+            // 다음 CSI/OSC가 바로 이어지는 경우가 있다. 이 경우 새 ESC 시퀀스로
+            // 전환하지 않으면 파일 끝까지 OSC 내용으로 삼켜 버린다.
+            if (ch == L'\\')
+                state = State::Normal;
+            else if (ch == L'[')
+            {
+                params.clear();
+                state = State::Csi;
+            }
+            else if (ch == L']')
+                state = State::Osc;
+            else if (ch == L'P' || ch == L'_' || ch == L'^')
+                state = State::String;
+            else
+                state = State::Normal;
+            break;
+
+        case State::String:
+            if (ch == 0x1B) state = State::StringEsc;
+            break;
+
+        case State::StringEsc:
+            state = (ch == L'\\') ? State::Normal : State::String;
+            break;
+        }
+    }
+
+    MemoFlushAnsiRun(runs, text, style, inverse);
+    return runs;
+}
+
+static void MemoSetPlainText(HWND hwndEdit, const std::wstring& text)
+{
+    const DWORD oldMask = static_cast<DWORD>(SendMessageW(hwndEdit, EM_GETEVENTMASK, 0, 0));
+    SendMessageW(hwndEdit, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(hwndEdit, EM_SETEVENTMASK, 0, 0);
+    SetWindowTextW(hwndEdit, text.c_str());
+    SendMessageW(hwndEdit, EM_SETSEL, 0, 0);
+    SendMessageW(hwndEdit, EM_SETEVENTMASK, 0, oldMask);
+    SendMessageW(hwndEdit, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(hwndEdit, nullptr, TRUE);
+}
+
+static std::wstring MemoGetAnsiSourceText()
+{
+    // 파일을 열 때 보관한 원본을 우선 사용한다. RichEdit은 제어문자를
+    // 정규화하거나 ANSI 미리보기에서 서식 텍스트로 바꾸므로, 화면의
+    // 문자열만 다시 읽으면 원본 ESC 코드가 사라질 수 있다.
+    if (!g_memo.ansiRawText.empty())
+        return g_memo.ansiRawText;
+
+    return GetWindowTextString(g_memo.hwndEdit);
+}
+
+static void MemoStripAnsiCodes(HWND hwnd)
+{
+    if (!g_memo.hwndEdit)
+        return;
+
+    const std::wstring sourcePath = !g_memo.currentPath.empty()
+        ? g_memo.currentPath : g_memo.ansiSourcePath;
+    const std::wstring raw = MemoGetAnsiSourceText();
+    const std::wstring plain = MemoStripAnsi(raw);
+
+    g_memo.loadingFile = true;
+    if (g_memo.ansiRawText.empty())
+        g_memo.ansiRawText = raw;
+    SendMessageW(g_memo.hwndEdit, EM_SETREADONLY, FALSE, 0);
+    g_memo.ansiPreviewMode = false;
+    g_memo.ansiSourcePath = sourcePath;
+    g_memo.currentPath.clear();
+    g_memo.encodingType = 0;
+    MemoSetPlainText(g_memo.hwndEdit, plain);
+    ApplyMemoFontAndFormat();
+    g_memo.loadingFile = false;
+    MarkMemoDirty(true);
+    UpdateMemoMenuState(hwnd);
+    UpdateMemoStatus();
+    SetFocus(g_memo.hwndEdit);
+}
+
+static void MemoApplyAnsiRuns(HWND hwndEdit, const std::vector<StyledRun>& runs)
+{
+    const DWORD oldMask = static_cast<DWORD>(SendMessageW(hwndEdit, EM_GETEVENTMASK, 0, 0));
+    SendMessageW(hwndEdit, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(hwndEdit, EM_SETEVENTMASK, 0, 0);
+    SendMessageW(hwndEdit, EM_SETREADONLY, FALSE, 0);
+    SetWindowTextW(hwndEdit, L"");
+
+    const COLORREF back = g_app ? g_app->logStyle.backColor : RGB(0, 0, 0);
+    SendMessageW(hwndEdit, EM_SETBKGNDCOLOR, 0, back);
+    if (g_app && g_app->hFontLog)
+        SendMessageW(hwndEdit, WM_SETFONT, reinterpret_cast<WPARAM>(g_app->hFontLog), FALSE);
+
+    const LOGFONTW lf = g_app ? g_app->logStyle.font : g_memo.font;
+    int pointSize = GetFontPointSizeFromLogFont(lf);
+    if (pointSize < 6) pointSize = 12;
+
+    for (const StyledRun& run : runs)
+    {
+        if (run.text.empty())
+            continue;
+
+        CHARFORMAT2W cf{};
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_COLOR | CFM_BACKCOLOR | CFM_BOLD |
+            CFM_FACE | CFM_SIZE | CFM_CHARSET;
+        cf.crTextColor = run.style.fg;
+        cf.crBackColor = run.style.bg;
+        cf.dwEffects = run.style.bold ? CFE_BOLD : 0;
+        cf.yHeight = pointSize * 20;
+        cf.bCharSet = HANGEUL_CHARSET;
+        lstrcpynW(cf.szFaceName, lf.lfFaceName, LF_FACESIZE);
+
+        SendMessageW(hwndEdit, EM_SETCHARFORMAT, SCF_SELECTION,
+            reinterpret_cast<LPARAM>(&cf));
+        SendMessageW(hwndEdit, EM_REPLACESEL, FALSE,
+            reinterpret_cast<LPARAM>(run.text.c_str()));
+    }
+
+    SendMessageW(hwndEdit, EM_SETSEL, 0, 0);
+    SendMessageW(hwndEdit, WM_VSCROLL, SB_TOP, 0);
+    SendMessageW(hwndEdit, EM_SETREADONLY, TRUE, 0);
+    SendMessageW(hwndEdit, EM_SETEVENTMASK, 0, oldMask);
+    SendMessageW(hwndEdit, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(hwndEdit, nullptr, TRUE);
+}
+
+static void MemoShowAnsiPreview(HWND hwnd)
+{
+    if (!g_memo.hwndEdit || g_memo.ansiPreviewMode)
+        return;
+
+    const std::wstring raw = MemoGetAnsiSourceText();
+    const std::wstring normalized = MemoNormalizeCapturedAnsi(raw, true);
+    const std::vector<StyledRun> runs = MemoAnsiToRuns(normalized);
+    if (runs.empty() && !raw.empty())
+    {
+        ShowCenteredMessageBox(hwnd,
+            L"표시할 일반 문자나 ANSI 색상 문자열이 없습니다.",
+            L"ANSI 변환 보기", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    g_memo.loadingFile = true;
+    g_memo.ansiSourcePath = g_memo.currentPath;
+    g_memo.ansiRawText = raw;
+    MemoApplyAnsiRuns(g_memo.hwndEdit, runs);
+    g_memo.ansiPreviewMode = true;
+    g_memo.loadingFile = false;
+    MarkMemoDirty(false);
+    UpdateMemoMenuState(hwnd);
+    UpdateMemoStatus();
+    SetFocus(g_memo.hwndEdit);
+}
+
+static bool MemoCloseCurrentDocument(HWND hwnd)
+{
+    if (!g_memo.hwndEdit)
+        return true;
+
+    if (g_memo.dirty)
+    {
+        const int answer = ShowCenteredMessageBox(hwnd,
+            L"현재 문서의 변경 내용을 저장하시겠습니까?",
+            L"현재 파일 닫기",
+            MB_YESNOCANCEL | MB_ICONQUESTION);
+
+        if (answer == IDCANCEL)
+            return false;
+        if (answer == IDYES && !MemoDoSaveDialog(hwnd, false))
+            return false;
+    }
+
+    g_memo.loadingFile = true;
+    SendMessageW(g_memo.hwndEdit, EM_SETREADONLY, FALSE, 0);
+    g_memo.ansiPreviewMode = false;
+    g_memo.currentPath.clear();
+    g_memo.ansiSourcePath.clear();
+    g_memo.ansiRawText.clear();
+    g_memo.encodingType = 0;
+    s_lastMemoHighlightSig = 0;
+
+    MemoSetPlainText(g_memo.hwndEdit, L"");
+    ApplyMemoFontAndFormat();
+
+    g_memo.loadingFile = false;
+    MarkMemoDirty(false);
+    UpdateMemoMenuState(hwnd);
+    UpdateMemoTitle();
+    UpdateMemoStatus();
+    SetFocus(g_memo.hwndEdit);
+    return true;
 }
 
 static void CreateMemoMenus(HWND hwnd)
@@ -342,9 +1200,11 @@ static void CreateMemoMenus(HWND hwnd)
     UniqueMenu hSearch(CreatePopupMenu());
     UniqueMenu hFormat(CreatePopupMenu());
     UniqueMenu hMode(CreatePopupMenu());
+    UniqueMenu hRecentCapture(CreatePopupMenu());
 
     if (!hMenuBar.IsValid() || !hFile.IsValid() || !hEdit.IsValid() ||
-        !hSearch.IsValid() || !hFormat.IsValid() || !hMode.IsValid())
+        !hSearch.IsValid() || !hFormat.IsValid() || !hMode.IsValid() ||
+        !hRecentCapture.IsValid())
         return;
 
     auto AddODItem = [](HMENU hMenu, UINT_PTR id, const wchar_t* text) {
@@ -356,6 +1216,12 @@ static void CreateMemoMenus(HWND hwnd)
         };
 
     AddODItem(hFile.Get(), ID_MEMO_FILE_OPEN, L"열기...\tCtrl+O");
+    AddODItem(hFile.Get(), ID_MEMO_FILE_OPEN_CAPTURE_FOLDER, L"갈무리 폴더 열기");
+    s_hMemoRecentCaptureMenu = hRecentCapture.Get();
+    MemoRebuildRecentCaptureMenu();
+    AddODPopup(hFile.Get(), hRecentCapture, L"마지막 갈무리 열기");
+    AddODItem(hFile.Get(), ID_MEMO_FILE_CLOSE_CURRENT, L"현재 파일 닫기\tCtrl+W");
+    AppendMenuW(hFile.Get(), MF_SEPARATOR, 0, nullptr);
     AddODItem(hFile.Get(), ID_MEMO_FILE_SAVE, L"저장\tCtrl+S");
     AddODItem(hFile.Get(), ID_MEMO_FILE_SAVEAS, L"다른 이름으로 저장...");
     AppendMenuW(hFile.Get(), MF_SEPARATOR, 0, nullptr);
@@ -371,6 +1237,7 @@ static void CreateMemoMenus(HWND hwnd)
     AddODItem(hEdit.Get(), ID_MEMO_EDIT_COPY, L"복사\tCtrl+C");
     AddODItem(hEdit.Get(), ID_MEMO_EDIT_PASTE, L"붙여넣기\tCtrl+V");
     AddODItem(hEdit.Get(), ID_MEMO_EDIT_DELETE, L"삭제\tDel");
+    AddODItem(hEdit.Get(), ID_MEMO_EDIT_COLLAPSE_BLANK_LINES, L"연속되는 빈행 삭제");
 
     AppendMenuW(hEdit.Get(), MF_SEPARATOR, 0, nullptr);
     AddODItem(hEdit.Get(), ID_MEMO_EDIT_DOC_START, L"글월 처음\tCtrl+Home");
@@ -436,6 +1303,9 @@ static void CreateMemoMenus(HWND hwnd)
     AddODPopup(hFormat.Get(), hSyntaxLang, L"구문 강조 선택...");
     AddODItem(hFormat.Get(), ID_MEMO_VIEW_FORMATMARKS, L"조판 부호 보기 켜기");
 
+    AddODItem(hMode.Get(), ID_MEMO_SPECIAL_STRIP_ANSI, L"ANSI 코드 제거");
+    AddODItem(hMode.Get(), ID_MEMO_SPECIAL_PREVIEW_ANSI, L"ANSI 변환 보기");
+    AppendMenuW(hMode.Get(), MF_SEPARATOR, 0, nullptr);
     AddODItem(hMode.Get(), ID_MEMO_DRAW_TOGGLE, L"그리기 모드 켜기\tAlt+D");
     AddODItem(hMode.Get(), ID_MEMO_REPEAT_SYMBOL, L"마지막 기호 반복\tCtrl+R");
     AddODItem(hMode.Get(), ID_MEMO_AUTOSAVE_TOGGLE, L"자동저장 켜기");
@@ -588,6 +1458,138 @@ static void MemoDeleteSelectionOrChar(HWND hEdit)
     }
     SendMessageW(hEdit, EM_SETSEL, cr.cpMin, cr.cpMin + 1);
     SendMessageW(hEdit, EM_REPLACESEL, TRUE, (LPARAM)L"");
+}
+
+
+static bool MemoLineIsBlankAfterAnsi(const std::wstring& line)
+{
+    bool hasVisible = false;
+    size_t i = 0;
+    while (i < line.size())
+    {
+        const wchar_t ch = line[i];
+        if (ch == 0x1B)
+        {
+            ++i;
+            if (i >= line.size())
+                break;
+
+            if (line[i] == L'[')
+            {
+                ++i;
+                while (i < line.size())
+                {
+                    const wchar_t c = line[i++];
+                    if (c >= 0x40 && c <= 0x7E)
+                        break;
+                }
+                continue;
+            }
+
+            if (line[i] == L']')
+            {
+                ++i;
+                while (i < line.size())
+                {
+                    if (line[i] == 0x07)
+                    {
+                        ++i;
+                        break;
+                    }
+                    if (line[i] == 0x1B && i + 1 < line.size() && line[i + 1] == L'\\')
+                    {
+                        i += 2;
+                        break;
+                    }
+                    ++i;
+                }
+                continue;
+            }
+
+            ++i;
+            continue;
+        }
+
+        if (!iswspace(ch))
+            hasVisible = true;
+        ++i;
+    }
+    return !hasVisible;
+}
+
+static void MemoCollapseConsecutiveBlankLines(HWND hwnd)
+{
+    if (!g_memo.hwndEdit || g_memo.ansiPreviewMode)
+        return;
+
+    const std::wstring original = GetWindowTextString(g_memo.hwndEdit);
+    if (original.empty())
+        return;
+
+    CHARRANGE oldSel{};
+    SendMessageW(g_memo.hwndEdit, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&oldSel));
+
+    std::vector<std::wstring> lines;
+    std::wstring current;
+    for (size_t i = 0; i < original.size(); ++i)
+    {
+        const wchar_t ch = original[i];
+        if (ch == L'\r' || ch == L'\n')
+        {
+            lines.push_back(current);
+            current.clear();
+            if (ch == L'\r' && i + 1 < original.size() && original[i + 1] == L'\n')
+                ++i;
+        }
+        else
+        {
+            current.push_back(ch);
+        }
+    }
+    lines.push_back(current);
+
+    std::vector<std::wstring> compact;
+    compact.reserve(lines.size());
+    bool previousBlank = false;
+    for (const auto& line : lines)
+    {
+        const bool blank = MemoLineIsBlankAfterAnsi(line);
+        if (blank && previousBlank)
+            continue;
+        compact.push_back(line);
+        previousBlank = blank;
+    }
+
+    std::wstring result;
+    for (size_t i = 0; i < compact.size(); ++i)
+    {
+        if (i > 0)
+            result += L"\r\n";
+        result += compact[i];
+    }
+
+    if (result == original)
+        return;
+
+    g_memo.loadingFile = true;
+    SetWindowTextW(g_memo.hwndEdit, result.c_str());
+    g_memo.loadingFile = false;
+    g_memo.dirty = true;
+
+    s_lastMemoHighlightSig = 0;
+    if (g_memo.useSyntax)
+        ApplyMemoSyntaxHighlight(g_memo.hwndEdit);
+    else
+        ApplyMemoFontAndFormat();
+
+    const LONG textLength = static_cast<LONG>(result.size());
+    const LONG caret = (std::min)(oldSel.cpMin, textLength);
+    SendMessageW(g_memo.hwndEdit, EM_SETSEL, caret, caret);
+    SendMessageW(g_memo.hwndEdit, EM_SCROLLCARET, 0, 0);
+
+    UpdateMemoTitle();
+    UpdateMemoStatus();
+    InvalidateRect(g_memo.hwndEdit, nullptr, TRUE);
 }
 
 static std::wstring MemoGetLineText(HWND hEdit, int line)
@@ -1191,6 +2193,33 @@ static LRESULT CALLBACK MemoFindReplaceProc(HWND hwnd, UINT msg, WPARAM wParam, 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+static void CenterMemoPopup(HWND popup, HWND owner, int width, int height)
+{
+    RECT ownerRect{};
+    if (!owner || !GetWindowRect(owner, &ownerRect))
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &ownerRect, 0);
+
+    RECT work{};
+    HMONITOR monitor = MonitorFromRect(&ownerRect, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (monitor && GetMonitorInfoW(monitor, &mi))
+        work = mi.rcWork;
+    else
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+
+    int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
+    const int workLeft = static_cast<int>(work.left);
+    const int workTop = static_cast<int>(work.top);
+    const int workRight = static_cast<int>(work.right);
+    const int workBottom = static_cast<int>(work.bottom);
+
+    x = std::max(workLeft, std::min(x, workRight - width));
+    y = std::max(workTop, std::min(y, workBottom - height));
+    SetWindowPos(popup, HWND_TOP, x, y, width, height, SWP_SHOWWINDOW);
+}
+
 static void ShowMemoFindReplaceDialog(HWND owner, bool isReplace) 
 {
     if (g_memoFind.hwndDialog && IsWindow(g_memoFind.hwndDialog)) {
@@ -1199,7 +2228,7 @@ static void ShowMemoFindReplaceDialog(HWND owner, bool isReplace)
         ShowWindow(GetDlgItem(g_memoFind.hwndDialog, IDC_MEMOFIND_REPLACE), isReplace ? SW_SHOW : SW_HIDE);
         ShowWindow(GetDlgItem(g_memoFind.hwndDialog, IDC_MEMOREPLACE_DO), isReplace ? SW_SHOW : SW_HIDE);
         ShowWindow(GetDlgItem(g_memoFind.hwndDialog, IDC_MEMOREPLACE_ALL), isReplace ? SW_SHOW : SW_HIDE);
-        SetWindowPos(g_memoFind.hwndDialog, HWND_TOP, 0, 0, 420, isReplace ? 200 : 160, SWP_NOMOVE | SWP_SHOWWINDOW);
+        CenterMemoPopup(g_memoFind.hwndDialog, owner, 420, isReplace ? 200 : 160);
         SetFocus(GetDlgItem(g_memoFind.hwndDialog, IDC_MEMOFIND_QUERY));
         return;
     }
@@ -1211,10 +2240,10 @@ static void ShowMemoFindReplaceDialog(HWND owner, bool isReplace)
         RegisterClassW(&wc); reg = true;
     }
 
-    RECT rc; GetWindowRect(owner, &rc);
     int h = isReplace ? 200 : 160;
     HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"TTMemoFindRepClass", isReplace ? L"바꾸기" : L"찾기",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, rc.left + 50, rc.top + 50, 420, h, owner, nullptr, GetModuleHandle(0), nullptr);
+        WS_POPUP | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 420, h, owner, nullptr, GetModuleHandle(0), nullptr);
+    CenterMemoPopup(hDlg, owner, 420, h);
 
     ApplyPopupTitleBarTheme(hDlg);
     HFONT hFont = GetPopupUIFont(hDlg);
@@ -1826,6 +2855,14 @@ static LRESULT CALLBACK MemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         LayoutMemoChildren(hwnd);
         return 0;
 
+    case WM_INITMENUPOPUP:
+        if (reinterpret_cast<HMENU>(wParam) == s_hMemoRecentCaptureMenu)
+        {
+            MemoRebuildRecentCaptureMenu();
+            return 0;
+        }
+        break;
+
     case WM_TIMER:
         if (wParam == ID_TIMER_MEMO_AUTOSAVE) { MemoAutoSave(); return 0; }
         break;
@@ -1841,6 +2878,12 @@ static LRESULT CALLBACK MemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         switch (LOWORD(wParam))
         {
         case ID_MEMO_FILE_OPEN:   MemoDoOpenDialog(hwnd); return 0;
+        case ID_MEMO_FILE_OPEN_CAPTURE_FOLDER:
+            OpenCaptureLogFolder(hwnd);
+            return 0;
+        case ID_MEMO_FILE_CLOSE_CURRENT:
+            MemoCloseCurrentDocument(hwnd);
+            return 0;
         case ID_MEMO_FILE_SAVE:   MemoDoSaveDialog(hwnd, false); return 0;
         case ID_MEMO_FILE_SAVEAS:
         { // ★ 변수 선언을 위해 중괄호 블록을 열어줍니다.
@@ -1871,6 +2914,9 @@ static LRESULT CALLBACK MemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case ID_MEMO_EDIT_COPY:      SendMessageW(g_memo.hwndEdit, WM_COPY, 0, 0); return 0;
         case ID_MEMO_EDIT_PASTE:     SendMessageW(g_memo.hwndEdit, WM_PASTE, 0, 0); return 0;
         case ID_MEMO_EDIT_DELETE:    MemoDeleteSelectionOrChar(g_memo.hwndEdit); return 0;
+        case ID_MEMO_EDIT_COLLAPSE_BLANK_LINES:
+            MemoCollapseConsecutiveBlankLines(hwnd);
+            return 0;
         case ID_MEMO_EDIT_SELECTALL: SendMessageW(g_memo.hwndEdit, EM_SETSEL, 0, -1); return 0;
 
         case ID_MEMO_EDIT_FIND: ShowMemoFindReplaceDialog(hwnd, false); return 0;
@@ -2001,6 +3047,14 @@ static LRESULT CALLBACK MemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             SendMessageW(g_memo.hwndEdit, EM_REPLACESEL, TRUE, (LPARAM)L"");
             return 0;
         }
+
+        case ID_MEMO_SPECIAL_STRIP_ANSI:
+            MemoStripAnsiCodes(hwnd);
+            return 0;
+
+        case ID_MEMO_SPECIAL_PREVIEW_ANSI:
+            MemoShowAnsiPreview(hwnd);
+            return 0;
 
         case ID_MEMO_DRAW_TOGGLE:
             g_memo.drawMode = !g_memo.drawMode;
@@ -2257,6 +3311,14 @@ static LRESULT CALLBACK MemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             return 0;
 
         default:
+            if (LOWORD(wParam) >= ID_MEMO_FILE_RECENT_CAPTURE_BASE &&
+                LOWORD(wParam) < ID_MEMO_FILE_RECENT_CAPTURE_BASE + 5)
+            {
+                const int idx = LOWORD(wParam) - ID_MEMO_FILE_RECENT_CAPTURE_BASE;
+                if (idx >= 0 && idx < static_cast<int>(s_recentCapturePaths.size()))
+                    MemoOpenFile(hwnd, s_recentCapturePaths[idx]);
+                return 0;
+            }
             if (LOWORD(wParam) >= ID_MEMO_RECENT_BASE && LOWORD(wParam) < ID_MEMO_RECENT_BASE + 5) {
                 int idx = LOWORD(wParam) - ID_MEMO_RECENT_BASE;
                 if (idx >= 0 && idx < (int)g_memo.recentFiles.size()) MemoOpenFile(hwnd, g_memo.recentFiles[idx]);
@@ -2319,6 +3381,8 @@ static LRESULT CALLBACK MemoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_DESTROY:
     {
         KillWinTimer(hwnd, ID_TIMER_MEMO_AUTOSAVE);
+        s_hMemoRecentCaptureMenu = nullptr;
+        s_recentCapturePaths.clear();
         SaveMemoWindowSettings();
         if (g_memo.hwndEdit) RemovePropW(g_memo.hwndEdit, L"MemoOldProc");
 
@@ -2566,6 +3630,7 @@ static bool HandleMemoShortcutKey(UINT msg, WPARAM wParam)
             switch ((int)wParam)
             {
             case 'O': return DoCmd(ID_MEMO_FILE_OPEN);
+            case 'W': return DoCmd(ID_MEMO_FILE_CLOSE_CURRENT);
             case 'S': return DoCmd(ID_MEMO_FILE_SAVE);
             case 'Z': return DoCmd(ID_MEMO_EDIT_UNDO);
             case 'Y': return DoCmd(ID_MEMO_EDIT_REDO);
@@ -2603,6 +3668,63 @@ static LRESULT CALLBACK MemoEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     if (HandleMemoShortcutKey(msg, wParam))
         return 0;
+
+    if (msg == WM_CONTEXTMENU)
+    {
+        CHARRANGE selection{};
+        SendMessageW(hwnd, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+        const bool hasSelection = selection.cpMin != selection.cpMax;
+        const bool readOnly = (GetWindowLongPtrW(hwnd, GWL_STYLE) & ES_READONLY) != 0;
+
+        UniqueMenu menu(CreatePopupMenu());
+        if (!menu.IsValid())
+            return 0;
+
+        if (hasSelection)
+        {
+            AppendMenuW(menu.Get(), MF_STRING, 1, L"복사하기");
+            AppendMenuW(menu.Get(), readOnly ? MF_GRAYED : MF_STRING, 2, L"잘라내기");
+            AppendMenuW(menu.Get(), readOnly ? MF_GRAYED : MF_STRING, 3, L"삭제하기");
+        }
+        else
+        {
+            AppendMenuW(menu.Get(), readOnly ? MF_GRAYED : MF_STRING, 4, L"붙여넣기");
+            AppendMenuW(menu.Get(), MF_STRING, 5, L"모두 선택");
+            AppendMenuW(menu.Get(), MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(menu.Get(), MF_STRING, 6, L"찾기");
+        }
+
+        POINT pt{};
+        if (GET_X_LPARAM(lParam) == -1 && GET_Y_LPARAM(lParam) == -1)
+        {
+            LRESULT pos = SendMessageW(hwnd, EM_POSFROMCHAR, selection.cpMax, 0);
+            pt.x = GET_X_LPARAM(pos);
+            pt.y = GET_Y_LPARAM(pos);
+            ClientToScreen(hwnd, &pt);
+        }
+        else
+        {
+            pt.x = GET_X_LPARAM(lParam);
+            pt.y = GET_Y_LPARAM(lParam);
+        }
+
+        SetForegroundWindow(g_memo.hwnd ? g_memo.hwnd : hwnd);
+        UINT command = TrackPopupMenu(menu.Get(), TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            pt.x, pt.y, 0, g_memo.hwnd ? g_memo.hwnd : hwnd, nullptr);
+        PostMessageW(g_memo.hwnd ? g_memo.hwnd : hwnd, WM_NULL, 0, 0);
+
+        switch (command)
+        {
+        case 1: SendMessageW(hwnd, WM_COPY, 0, 0); break;
+        case 2: SendMessageW(hwnd, WM_CUT, 0, 0); break;
+        case 3: SendMessageW(hwnd, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L"")); break;
+        case 4: SendMessageW(hwnd, WM_PASTE, 0, 0); break;
+        case 5: SendMessageW(hwnd, EM_SETSEL, 0, -1); break;
+        case 6: ShowMemoFindReplaceDialog(g_memo.hwnd ? g_memo.hwnd : hwnd, false); break;
+        default: break;
+        }
+        return 0;
+    }
 
     // 그리기 모드에서는 RichEdit가 방향키를 먼저 처리하기 전에 가로채야 합니다.
     // 이전 안전판에서는 DefSubclassProc()를 먼저 호출해서 커서만 이동하고
@@ -2673,6 +3795,11 @@ static bool MemoOpenFile(HWND hwnd, const std::wstring& path)
     std::string bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     ifs.close();
 
+    // 새 파일을 열면 ANSI 미리보기 읽기 전용 상태를 해제한다.
+    SendMessageW(g_memo.hwndEdit, EM_SETREADONLY, FALSE, 0);
+    g_memo.ansiPreviewMode = false;
+    g_memo.ansiSourcePath.clear();
+
     // ★ 로딩 중 플래그 ON
     g_memo.loadingFile = true;
 
@@ -2682,12 +3809,14 @@ static bool MemoOpenFile(HWND hwnd, const std::wstring& path)
         SendMessageW(g_memo.hwndEdit, EM_SETEVENTMASK, 0, 0);
 
         SetWindowTextW(g_memo.hwndEdit, L"");
+        ApplyMemoFontAndFormat();
 
         SendMessageW(g_memo.hwndEdit, EM_SETEVENTMASK, 0, oldEventMask);
         SendMessageW(g_memo.hwndEdit, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(g_memo.hwndEdit, nullptr, TRUE);
 
         g_memo.currentPath = path;
+        g_memo.ansiRawText.clear();
         g_memo.encodingType = 0; // 새 파일은 기본 UTF-8
         MarkMemoDirty(false);
         UpdateMemoTitle();
@@ -2733,7 +3862,12 @@ static bool MemoOpenFile(HWND hwnd, const std::wstring& path)
 
     // 4. 에디터에 텍스트 채우기
     SetWindowTextW(g_memo.hwndEdit, text.c_str());
+    // ANSI 미리보기가 적용했던 검정 배경/개별 문자 서식을 새 파일에
+    // 물려주지 않고 메모장 기본 폰트와 색으로 완전히 되돌린다.
+    ApplyMemoFontAndFormat();
     g_memo.currentPath = path;
+    g_memo.ansiSourcePath.clear();
+    g_memo.ansiRawText = text;
     MarkMemoDirty(false);
     MemoPushRecentFile(path);
 
@@ -2773,7 +3907,14 @@ static bool MemoOpenFile(HWND hwnd, const std::wstring& path)
 
 static bool MemoSaveFile(HWND hwnd, const std::wstring& path)
 {
-    (void)hwnd;
+    if (g_memo.ansiPreviewMode)
+    {
+        ShowCenteredMessageBox(hwnd,
+            L"ANSI 변환 보기는 원본 보호를 위해 읽기 전용입니다.\n"
+            L"편집하거나 저장하려면 먼저 'ANSI 코드 제거'를 선택하세요.",
+            L"메모장", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
 
     std::wstring text = GetWindowTextString(g_memo.hwndEdit);
     bool saved = false;
@@ -2790,6 +3931,8 @@ static bool MemoSaveFile(HWND hwnd, const std::wstring& path)
         return false;
 
     g_memo.currentPath = path;
+    g_memo.ansiSourcePath.clear();
+    g_memo.ansiRawText.clear();
     MarkMemoDirty(false);
     MemoPushRecentFile(path);
     UpdateMemoTitle();
@@ -2802,10 +3945,24 @@ static void UpdateMemoTitle()
     if (!g_memo.hwnd) return;
 
     std::wstring title = L"메모장";
-    if (!g_memo.currentPath.empty())
+    if (g_memo.ansiPreviewMode)
+    {
+        title += L" - ANSI 변환 보기";
+        if (!g_memo.ansiSourcePath.empty())
+        {
+            title += L" - ";
+            title += g_memo.ansiSourcePath;
+        }
+    }
+    else if (!g_memo.currentPath.empty())
     {
         title += L" - ";
         title += g_memo.currentPath;
+    }
+    else if (!g_memo.ansiSourcePath.empty())
+    {
+        title += L" - ANSI 제거본 - ";
+        title += g_memo.ansiSourcePath;
     }
     else
     {
@@ -2833,7 +3990,9 @@ void UpdateMemoStatus()
 
     wsprintfW(encBuf, L"\t%s", g_memo.encodingType == 0 ? L"UTF-8" : L"CP949");
     wsprintfW(buf1, L"\t%d 줄\t%d 칸", line + 1, col + 1);
-    wsprintfW(buf2, L"\t%s", g_memo.insertMode ? L"삽입" : L"수정");
+    wsprintfW(buf2, L"\t%s", g_memo.ansiPreviewMode
+        ? L"ANSI 보기(읽기 전용)"
+        : (g_memo.insertMode ? L"삽입" : L"수정"));
     wsprintfW(buf3, L"\t그리기: %s  |  열모드: %s  |  자동저장: %s",
         g_memo.drawMode ? L"ON" : L"OFF",
         g_memo.columnMode ? L"ON" : L"OFF",
