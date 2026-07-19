@@ -933,6 +933,15 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             AppendMenuW(menu.Get(), MF_SEPARATOR, 0, nullptr);
         }
 
+        // 메인 출력 화면의 우클릭 메뉴는 MainWndProc가 아니라
+        // 이 TerminalWndProc에서 직접 생성하므로 붙여넣기도 여기에 추가한다.
+        const bool hasClipboardText =
+            IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE;
+        AppendMenuW(menu.Get(),
+            hasClipboardText ? MF_STRING : (MF_STRING | MF_GRAYED),
+            ID_MENU_DIRECT_PASTE, L"붙여넣기");
+        AppendMenuW(menu.Get(), MF_SEPARATOR, 0, nullptr);
+
         const bool hasSelection = g_app && g_app->termBuffer && g_app->termBuffer->HasSelection();
         const UINT selectionState = hasSelection ? MF_STRING : (MF_STRING | MF_GRAYED);
 
@@ -995,6 +1004,13 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         else if (command == ID_LOG_CLOSE_SELECTION)
         {
             ClearTerminalSelectionAndRefocus(hwnd);
+        }
+        else if (command == ID_MENU_DIRECT_PASTE)
+        {
+            // 붙여넣기 실제 처리는 MainWndProc의 기존 명령 처리기를 재사용한다.
+            SendMessageW(owner, WM_COMMAND,
+                MAKEWPARAM(ID_MENU_DIRECT_PASTE, 0), 0);
+            RefocusActiveInputAfterSelection();
         }
         else if (command != 0)
         {

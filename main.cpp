@@ -1706,6 +1706,35 @@ switch (LOWORD(wParam))
             return true;
         }
 
+        case ID_MENU_DIRECT_PASTE:
+        {
+            std::wstring clipText;
+
+            if (OpenClipboard(hwnd))
+            {
+                HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+                if (hData)
+                {
+                    const wchar_t* pText =
+                        static_cast<const wchar_t*>(GlobalLock(hData));
+
+                    if (pText)
+                    {
+                        clipText.assign(pText);
+                        GlobalUnlock(hData);
+                    }
+                }
+
+                CloseClipboard();
+            }
+
+            if (!clipText.empty())
+                SendMultilineTextToProcess(clipText);
+
+            RefocusActiveInput();
+            return true;
+        }
+
         case ID_LOG_COPY:
             if (g_app && g_app->hwndLog) { SendMessageW(g_app->hwndLog, WM_COMMAND, MAKEWPARAM(ID_LOG_COPY, 0), 0); }
             RefocusActiveInput();

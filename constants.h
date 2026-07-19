@@ -94,6 +94,7 @@ static const int ID_MENU_OPTIONS_CHAT_DOCK = 1022;
 static const int ID_MENU_OPTIONS_CHAT_CAPTURE = 1024;
 static const int ID_MENU_OPTIONS_CHAT_TOGGLE_VISIBLE = 1025;
 static const int ID_MENU_FILE_NEW_WINDOW = 1026;
+static const int ID_MENU_DIRECT_PASTE = 1027;
 
 static const int ID_LOG_COPY = 1101;                  // 선택블럭 일반 복사
 static const int ID_LOG_CLEAR_CHAT = 1102;
