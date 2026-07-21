@@ -46,6 +46,7 @@ bool WriteAllToWinFile(HANDLE file, const void* data, size_t len);
 bool WriteBytesToFile(const std::wstring& path, const void* data, size_t len, bool append = false);
 bool WriteStringToFile(const std::wstring& path, const std::string& data, bool append = false);
 bool WriteUtf8BomTextFile(const std::wstring& path, const std::string& utf8);
+bool WriteUtf8NoBomTextFile(const std::wstring& path, const std::string& utf8);
 void PlayAudioFile(const std::wstring& path);
 std::wstring GetEditTextW(HWND hEdit);
 std::wstring GetWindowTextString(HWND hwnd);

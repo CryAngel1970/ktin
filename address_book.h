@@ -18,6 +18,7 @@ bool ConfirmDeleteAddressBookEntry(HWND hwnd, const std::wstring& name);
 
 void RefreshAddressBookList(HWND hList);
 void SortAddressBook();
+void SaveAddressBook();
 
 void BeginSwitchToAddressBookEntry(const AddressBookEntry& entry);
 void ConnectAddressBookEntry(const AddressBookEntry& entry, const std::wstring& internalSessionName = L"");

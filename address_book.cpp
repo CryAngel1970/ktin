@@ -412,16 +412,19 @@ void ConnectAddressBookEntry(const AddressBookEntry& entry, const std::wstring& 
         SendRawCommandToMud(L"#CONFIG {CHARSET} {CP949TOUTF8}");
     }
 
-    // #session 실행
+    // main.tin은 TinTin++ 프로세스 시작 인수로 먼저 읽힙니다.
+    // 주소록 스크립트는 #session의 선택 파일 인수로 넘깁니다. 이렇게 하면
+    // 연결이 성공한 해당 세션에만 스크립트가 읽혀 다른 주소록 세션의
+    // 트리거가 섞이지 않으며, TinTin++가 연결 성공 시 그 파일을 읽습니다.
     std::wstring cmd = L"#session {" + sessionName + L"} {" + host + L"} {" + portBuf + L"}";
+    const std::wstring scriptPath = Trim(entry.scriptPath);
+    if (!scriptPath.empty())
+        cmd += L" {" + scriptPath + L"}";
+
     SendRawCommandToMud(cmd);
     MarkKnownTinTinSession(sessionName);
 
     // StartAutoLoginWindowForAddressEntry()에서 이미 초기화했습니다.
-
-    if (!Trim(entry.scriptPath).empty()) {
-        SendRawCommandToMud(L"#read {" + Trim(entry.scriptPath) + L"}");
-    }
 
     g_app->g_charsetDetected = true;
     g_app->g_detectCharsetRetry = 999;

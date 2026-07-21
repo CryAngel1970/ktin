@@ -1,13 +1,47 @@
 // ==============================================
-// main.cpp 20260420
+// 통합 헤더 선언부
 // ==============================================
 #include "main.h"
-
-#include "resource.h"
-#include "utils.h"
+#include "abbreviation.h"
+#include "address_book.h"
+#include "app_state.h"
+#include "auto_login.h"
+#include "chat_capture.h"
+#include "constants.h"
+#include "dialogs.h"
+#include "functionkey.h"
 #include "gmcp.h"
+#include "highlight.h"
+#include "input.h"
+#include "log_tail.h"
+#include "memo.h"
+#include "numpad.h"
+#include "process_manager.h"
+#include "resource.h"
+#include "settings.h"
+#include "shortcut_bar.h"
+#include "status_bar.h"
+#include "terminal_buffer.h"
+#include "theme.h"
+#include "timer.h"
+#include "trigger_editor.h"
+#include "types.h"
+#include "utils.h"
+#include "variables.h"
+#include "win_util.h"
 
 #include <windows.h>
+#include <windowsx.h>
+#include <commctrl.h>
+#include <uxtheme.h>
+#include <shellapi.h>
+
+#include <ctime>
+#include <cwchar>
+#include <memory>
+#include <new>
+#include <string>
+#include <thread>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "Comctl32.lib")
@@ -22,11 +56,10 @@
 // 전역 변수
 // ==============================================
 AppState* g_app = nullptr;
-
-
+FindState g_findState;
 
 // ==============================================
-// wWinMain 진입점
+// wWinMain 진입점 (main.cpp)
 // ==============================================
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
@@ -79,22 +112,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 // ==============================================
 // merged from app_state.cpp
 // ==============================================
-#include "app_state.h"
-
-#include "terminal_buffer.h"
-
 AppState::AppState() = default;
 AppState::~AppState() = default;
-
-FindState g_findState;
 
 // ==============================================
 // merged from main_runtime.cpp
 // ==============================================
-#include "main.h"
-
-#include <commctrl.h>
-
 namespace
 {
     HMODULE g_hRichEdit = nullptr;
@@ -104,7 +127,7 @@ bool InitializeMainRuntime()
 {
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_STANDARD_CLASSES | ICC_LINK_CLASS;
+    icc.dwICC = ICC_STANDARD_CLASSES | ICC_LINK_CLASS | ICC_TREEVIEW_CLASSES;
 
     // Common Controls v6 manifest가 누락된 환경에서도 메인 창은 반드시 뜨게 한다.
     // SysLink 등 일부 보조 컨트롤 초기화가 실패하더라도 기본 Win32 컨트롤로 계속 진행한다.
@@ -165,11 +188,6 @@ int RunMainMessageLoop()
 // ==============================================
 // merged from main_message_loop.cpp
 // ==============================================
-#include "main.h"
-
-#include "app_state.h"
-#include "memo.h"
-
 bool DispatchModelessDialogMessage(MSG& msg)
 {
     if (g_findState.hwndDialog && IsWindow(g_findState.hwndDialog) &&
@@ -196,18 +214,6 @@ bool DispatchModelessDialogMessage(MSG& msg)
 // ==============================================
 // merged from main_timers.cpp
 // ==============================================
-#include "main.h"
-
-#include "address_book.h"
-#include "chat_capture.h"
-#include "constants.h"
-#include "settings.h"
-#include "utils.h"
-#include "win_util.h"
-
-#include <memory>
-#include <string>
-
 void CancelMainTimers(HWND hwnd)
 {
     if (!hwnd)
@@ -261,14 +267,10 @@ bool HandleMainTimer(HWND hwnd, WPARAM timerId)
         KillWinTimer(hwnd, ID_TIMER_AUTORECONNECT);
         if (g_app && g_app->hasActiveSession && g_app->activeSession.autoReconnect)
         {
-            // 자동 재접속 명령이 기존 화면을 덮기 전에 마지막 전투·사망·세션 종료
-            // 화면을 스크롤 기록과 갈무리 파일에 확정한다.
             if (g_app->termBuffer)
                 g_app->termBuffer->ArchiveCurrentScreenToHistory();
             FlushCaptureLogBuffer();
 
-            // 현재 창이 보관한 주소록 사본만 사용합니다. 끊어진 세션과 같은
-            // 이름을 재사용하지 않고 정리 후 새 고유 내부 세션으로 접속합니다.
             AddressBookEntry entry = g_app->activeSession;
             g_app->isConnected = false;
             BeginSwitchToAddressBookEntry(entry);
@@ -317,10 +319,6 @@ bool HandleMainTimer(HWND hwnd, WPARAM timerId)
 // ==============================================
 // merged from ui_resources.cpp
 // ==============================================
-#include "main.h"
-
-#include "win_util.h"
-
 namespace
 {
     HBRUSH BuildBrush(HBRUSH& slot, COLORREF color)
@@ -401,15 +399,6 @@ void CleanupAppGdiResources()
 // ==============================================
 // merged from session_state.cpp
 // ==============================================
-#include "main.h"
-
-#include "constants.h"
-#include "variables.h"
-#include "win_util.h"
-
-#include <ctime>
-#include <cwchar>
-
 namespace
 {
     VariableItem* FindSessionVariable(const wchar_t* name)
@@ -495,10 +484,6 @@ void SetSessionActiveState(HWND hwnd, bool active)
 // ==============================================
 // merged from global_shortcuts.cpp
 // ==============================================
-#include "main.h"
-
-#include "resource.h"
-
 bool HandleGlobalMenuShortcut(HWND hwnd, UINT msg, WPARAM wParam)
 {
     if (!g_app)
@@ -558,17 +543,6 @@ bool HandleGlobalMenuShortcut(HWND hwnd, UINT msg, WPARAM wParam)
 // ==============================================
 // merged from main_layout.cpp
 // ==============================================
-#include "main.h"
-
-#include "constants.h"
-#include "input.h"
-#include "process_manager.h"
-#include "shortcut_bar.h"
-#include "status_bar.h"
-#include "terminal_buffer.h"
-#include "utils.h"
-#include "win_util.h"
-
 void LayoutChildren(HWND hwnd)
 {
     if (!g_app || !hwnd) return;
@@ -647,22 +621,6 @@ void LayoutChildren(HWND hwnd)
 // ==============================================
 // merged from main_shutdown.cpp
 // ==============================================
-#include "main.h"
-
-#include "address_book.h"
-#include "auto_login.h"
-#include "chat_capture.h"
-#include "dialogs.h"
-#include "highlight.h"
-#include "numpad.h"
-#include "process_manager.h"
-#include "settings.h"
-#include "terminal_buffer.h"
-#include "timer.h"
-#include "utils.h"
-#include "variables.h"
-#include "win_util.h"
-
 bool ShutdownMainWindow(HWND hwnd)
 {
     HideTrayIcon(hwnd);
@@ -680,8 +638,6 @@ bool ShutdownMainWindow(HWND hwnd)
     SaveCaptureLogSettings();
     SaveScreenSizeSettings();
     SaveChatCaptureSettings();
-    // 주소록은 추가/수정/삭제/접속 시 즉시 저장됩니다. 새 창마다 별도 프로세스로
-    // 실행되므로 종료 시 오래된 메모리 사본을 다시 저장하면 다른 창의 변경을 덮을 수 있습니다.
     SaveFontRenderSettings();
     SaveHighlightSettings();
     SaveAutoLoginSettings();
@@ -706,7 +662,6 @@ bool ShutdownMainWindow(HWND hwnd)
         ResetMenuRef(g_app->hMainMenu);
 
     CleanupAppGdiResources();
-
     CleanupMainRuntime();
 
     PostQuitMessage(0);
@@ -716,33 +671,6 @@ bool ShutdownMainWindow(HWND hwnd)
 // ==============================================
 // merged from main_startup.cpp
 // ==============================================
-#include "main.h"
-
-#include "abbreviation.h"
-#include "address_book.h"
-#include "auto_login.h"
-#include "chat_capture.h"
-#include "functionkey.h"
-#include "highlight.h"
-#include "input.h"
-#include "memo.h"
-#include "numpad.h"
-#include "process_manager.h"
-#include "settings.h"
-#include "shortcut_bar.h"
-#include "status_bar.h"
-#include "terminal_buffer.h"
-#include "theme.h"
-#include "timer.h"
-#include "utils.h"
-#include "variables.h"
-
-#include <commctrl.h>
-#include <uxtheme.h>
-#include <windows.h>
-
-#include <new>
-
 namespace
 {
     void DestroyWindowIfOpen(HWND& hwnd)
@@ -782,7 +710,6 @@ namespace
 
 LRESULT HandleMainCreate(HWND hwnd)
 {
-    // [중요] 다른 폰트 로직이 돌아가기 전에 가장 먼저 등록해야 합니다!
     RegisterEmbeddedFont(); 
     g_app->hwndMain = hwnd;
     g_app->mainBackColor = RGB(45, 45, 48);        
@@ -797,28 +724,17 @@ LRESULT HandleMainCreate(HWND hwnd)
     LoadQuickConnectHistory();
     LoadHighlightSettings();
     
-    // 안전판: 장시간 실행 먹통의 주 원인이 되는 실시간 트리거/채팅 캡처/자동 갈무리는 기본 비활성화합니다.
-    // 찾기, 지난/현재 화면 복사/저장, 주소록, 자동 로그인, 단축키, 메모장 등은 유지합니다.
     g_hiState.active = false;
     g_hiState.rules.clear();
     g_app->chatCaptureEnabled = false;
     g_app->chatVisible = false;
-    // 전체 수신 갈무리는 화면 캡처/정규식 기능이 아니므로 사용자 설정을 유지합니다.
     g_app->chatTimestampEnabled = false;
     
-    // 자동 로그인은 실제 접속 명령(#session/#ses/#connect, 빠른연결, 주소록 연결)이
-    // 발생했을 때만 60초 동안 검사합니다.
-    // 프로그램 시작 직후에는 아직 서버 세션이 없을 수 있으므로 여기서 자동 로그인 창을
-    // 열지 않습니다. 그렇지 않으면 60초 뒤 접속유지가 로그인 전/미접속 상태에서
-    // 실행될 수 있습니다.
     LoadAutoLoginSettings();
     LoadVariableSettings();
     LoadNumpadSettings();
     LoadGeneralSettings();
 
-    // F1~F12, Alt/Shift/Ctrl 조합 48개를 먼저 구성한 뒤
-    // 사용자가 저장한 기능키 명령을 불러옵니다. 초기화를 생략하면
-    // vk 값이 0인 상태라 목록에 F-111만 보이고 수정키 탭이 비게 됩니다.
     InitShortcutBindings();
     LoadFunctionKeySettings();
 
@@ -826,10 +742,8 @@ LRESULT HandleMainCreate(HWND hwnd)
     LoadAbbreviationSettings();
     LoadTimerSettings();
     
-    // ★ 여기서 LoadWindowSettings를 호출하여 파일 상태를 완벽히 가져옴
     LoadWindowSettings(hwnd);
     
-    // 1. 로그창 스타일 설정 (함수 호출 한 줄로 끝!)
     InitStyleFont(g_app->logStyle.font, hwnd, 12);
     g_app->logStyle.font.lfCharSet = HANGEUL_CHARSET;
     g_app->logStyle.font.lfPitchAndFamily = FIXED_PITCH | FF_MODERN;
@@ -838,7 +752,6 @@ LRESULT HandleMainCreate(HWND hwnd)
     g_app->logStyle.textColor = RGB(220, 220, 220);
     g_app->logStyle.backColor = RGB(0, 0, 0);
     
-    // 2. 입력창 스타일 설정 (함수 호출 한 줄로 끝!)
     InitStyleFont(g_app->inputStyle.font, hwnd, 12);
     g_app->inputStyle.textColor = RGB(230, 230, 230);
     g_app->inputStyle.backColor = RGB(20, 20, 20);
@@ -855,17 +768,9 @@ LRESULT HandleMainCreate(HWND hwnd)
     
     g_app->hwndInput = CreateWindowExW(0, kInputContainerClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     g_app->hwndStatusBar = CreateWindowExW(0, kStatusBarClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, STATUS_BAR_HEIGHT, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-    // WM_CREATE 내부의 hwndShortcutBar 생성 부분
     g_app->hwndShortcutBar = CreateWindowExW(
-        0,
-        kShortcutBarClass,
-        L"",
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-        0, 0, 100, SHORTCUT_BAR_HEIGHT,
-        hwnd,
-        nullptr,
-        GetModuleHandleW(nullptr),
-        nullptr);
+        0, kShortcutBarClass, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+        0, 0, 100, SHORTCUT_BAR_HEIGHT, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     
     if (!g_app->hwndLog || !g_app->hwndInput || !g_app->hwndStatusBar || !g_app->hwndShortcutBar)
         return FailMainCreate(hwnd, L"메인 UI 컨트롤 생성에 실패했습니다.");
@@ -873,7 +778,6 @@ LRESULT HandleMainCreate(HWND hwnd)
     SendMessageW(g_app->hwndShortcutBar, WM_SETFONT, (WPARAM)g_app->hFontInput, TRUE);
     
     CreateMainMenu(hwnd);
-    
     ApplyStyles();
     
     for (int i = 0; i < INPUT_ROWS; ++i)
@@ -895,8 +799,6 @@ LRESULT HandleMainCreate(HWND hwnd)
     }
     LayoutChildren(hwnd);
     
-    // TinTin++/ConPTY 백엔드는 창이 화면에 올라간 뒤 비동기로 시작한다.
-    // 백엔드 실패가 메인 창 생성 실패로 이어지면 더블클릭 실행 시 아무 창도 뜨지 않는 회귀가 된다.
     PostMessageW(hwnd, WM_APP_START_BACKEND, 0, 0);
 
     g_app->activeEditIndex = 0;
@@ -931,29 +833,6 @@ LRESULT HandleMainCreate(HWND hwnd)
 // ==============================================
 // merged from main_events.cpp
 // ==============================================
-#include "main.h"
-
-#include "address_book.h"
-#include "chat_capture.h"
-#include "constants.h"
-#include "log_tail.h"
-#include "process_manager.h"
-#include "settings.h"
-#include "status_bar.h"
-#include "terminal_buffer.h"
-#include "utils.h"
-#include "win_util.h"
-
-#include "highlight.h"
-#include "numpad.h"
-#include "timer.h"
-
-#include <windowsx.h>
-
-#include <memory>
-#include <string>
-
-
 namespace
 {
     void RestoreMainWindow(HWND hwnd)
@@ -963,7 +842,6 @@ namespace
         ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
     }
-
 }
 
 bool HandleMainInitMenuPopup(HMENU menu)
@@ -1118,8 +996,6 @@ bool HandleMainLogChunk(HWND hwnd, LPARAM)
 {
     if (g_app)
     {
-        // ReaderThreadProc가 다음 출력 조각을 즉시 알릴 수 있도록 먼저 해제합니다.
-        // 실제 paint는 ScheduleLogRedraw()의 기존 30ms 타이머가 계속 묶습니다.
         g_app->logChunkMessagePending.store(false);
         ScheduleLogRedraw(hwnd);
     }
@@ -1173,6 +1049,7 @@ bool HandleMainStartBackend(HWND hwnd)
         return true;
     }
 
+    LoadDefaultTriggerScriptIfPresent();
     return true;
 }
 
@@ -1277,38 +1154,6 @@ bool HandleMainDestroy(HWND hwnd)
 // ==============================================
 // merged from main_commands.cpp
 // ==============================================
-#include "main.h"
-
-#include "constants.h"
-#include "types.h"
-#include "utils.h"
-#include "terminal_buffer.h"
-#include "theme.h"
-#include "highlight.h"
-#include "variables.h"
-#include "abbreviation.h"
-#include "settings.h"
-#include "functionkey.h"
-#include "numpad.h"
-#include "chat_capture.h"
-#include "shortcut_bar.h"
-#include "status_bar.h"
-#include "memo.h"
-#include "dialogs.h"
-#include "auto_login.h"
-#include "input.h"
-#include "timer.h"
-#include "address_book.h"
-#include "log_tail.h"
-#include "win_util.h"
-#include "resource.h"
-
-#include <shellapi.h>
-#include <memory>
-#include <new>
-#include <string>
-#include <thread>
-
 namespace {
 
 void LaunchNewKtinWindow(HWND owner)
@@ -1528,8 +1373,6 @@ switch (LOWORD(wParam))
             {
                 g_app->captureLogAnsi = !g_app->captureLogAnsi;
 
-                // 켜진 상태에서 형식을 바꾸면 한 파일 안에 ANSI 원문과 일반 텍스트가
-                // 섞이지 않도록 현재 파일을 닫고 새 형식 파일을 즉시 시작한다.
                 if (g_app->captureLogEnabled)
                 {
                     StopCaptureLog();
@@ -1651,7 +1494,7 @@ switch (LOWORD(wParam))
             if (g_app->hwndSymbol && IsWindow(g_app->hwndSymbol)) {
                 SetWindowPos(g_app->hwndSymbol, HWND_TOPMOST, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-                BringWindowToTop(g_app->hwndSymbol); // 추가
+                BringWindowToTop(g_app->hwndSymbol); 
                 SetForegroundWindow(g_app->hwndSymbol);
             }
             return true;
@@ -1682,7 +1525,7 @@ switch (LOWORD(wParam))
             RefocusActiveInput();
             return true;
         }
-        case ID_EDIT_STATUSBAR: // 추가된 부분
+        case ID_EDIT_STATUSBAR: 
         {
             PromptStatusBarDialog(hwnd);
             return true;
@@ -1762,8 +1605,6 @@ switch (LOWORD(wParam))
             return true;
         }
         case ID_MENU_FILE_ZAP:
-            // 사용자가 직접 연결 끊기를 선택한 경우에는 KTin이 세션명을
-            // 추적하지 못한 현재 세션도 인자 없는 #zap으로 종료할 수 있습니다.
             ZapKnownTinTinSession(true);
             g_app->hasPendingQuickConnect = false;
             g_app->pendingQuickCharsetCommand.clear();
@@ -1815,12 +1656,11 @@ switch (LOWORD(wParam))
         case ID_MENU_OPTIONS_KEEPALIVE_TOGGLE:
         {
             if (!g_app) break;
-            g_app->keepAliveEnabled = !g_app->keepAliveEnabled; // 상태 반전
-            SaveKeepAliveSettings(); // 즉시 파일에 저장
-            ApplyKeepAliveTimer(hwnd); // 타이머 끄거나 켜기 반영
-            UpdateMenuToggleStates(); // 메뉴 글씨 갱신
+            g_app->keepAliveEnabled = !g_app->keepAliveEnabled;
+            SaveKeepAliveSettings();
+            ApplyKeepAliveTimer(hwnd);
+            UpdateMenuToggleStates();
 
-            // 포커스를 입력창으로 돌려줌
             RefocusActiveInput();
             return true;
         }
@@ -1858,9 +1698,12 @@ switch (LOWORD(wParam))
         case ID_MENU_FIND_DIALOG:
             ShowFindDialog(hwnd);
             return true;
-        case ID_MENU_EDIT_HIGHLIGHT:
-            MessageBoxW(hwnd, L"장시간 실행 안정성을 위해 트리거/실시간 하이라이트 기능은 제거했습니다.", L"안내", MB_OK | MB_ICONINFORMATION);
+        case ID_MENU_EDIT_TRIGGER:
+        {
+            PromptTriggerEditor(hwnd);
+            RefocusActiveInput();
             return true;
+        }
 
         case ID_MENU_EDIT_FUNCTION_SHORTCUT:
         {
@@ -1868,11 +1711,7 @@ switch (LOWORD(wParam))
             RefocusActiveInput();
             return true;
         }
-
-        // (★ 아래처럼 수정: "끝내기" 메뉴를 누르면 트레이 옵션을 무시하고 완전히 강제 종료시킴)
         case ID_MENU_EXIT:
-            // 변수는 건드리지 않고, 창을 즉시 파괴합니다. 
-            // 이렇게 하면 WM_CLOSE를 거치지 않고 바로 WM_DESTROY로 가서 안전하게 저장됩니다.
             DestroyWindow(hwnd);
             return true;
 
@@ -1890,18 +1729,6 @@ switch (LOWORD(wParam))
 // ==============================================
 // merged from main_window.cpp
 // ==============================================
-#include "main.h"
-
-#include "constants.h"
-
-#include "input.h"
-#include "resource.h"
-#include "shortcut_bar.h"
-#include "status_bar.h"
-#include "utils.h"
-
-#include <string>
-
 const wchar_t kMainWindowClass[] = L"TTGuiMainWindow";
 const wchar_t* kTerminalWindowClass = L"TTGuiTerminalClass";
 const wchar_t kInputWindowClass[] = L"TTGuiInputWindow";

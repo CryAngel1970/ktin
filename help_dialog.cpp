@@ -776,6 +776,9 @@ Esc는 취소/닫기로 동작하는 창이 많습니다.)HELP");
 
 [설정 도구]
   찾기...                              Ctrl+F
+  트리거 편집...                       Alt+E, A
+    현재 주소록의 TinTin++ 스크립트에서 폴더/Class와 트리거를 편집합니다.
+    주소록 스크립트가 비어 있으면 전용 파일을 만들고 주소록에 자동 연결합니다.
   변수 설정...
   줄임말 설정...
   단축키 설정...
@@ -1080,7 +1083,9 @@ ASCII/유니코드 지도와 표를 작성하기 위한 기능입니다.
   bin\tt++.exe       KTin이 실행하는 TinTin++
   config.ini          화면·환경·GMCP·보조창 설정
   sessions.ini        주소록, 기능키 등 세션 관련 설정
-  main.tin            선택적으로 읽는 TinTin++ 시작 스크립트
+  main.tin            TinTin++ 시작 스크립트
+  ktin_triggers.tin   주소록 세션이 없을 때 쓰는 전역 KTin 트리거 파일
+  triggers\          주소록별 KTin 트리거 파일
   log\                갈무리 로그
   저장\              화면/선택영역 저장 파일
   autosave\          메모장 자동저장 복구 파일

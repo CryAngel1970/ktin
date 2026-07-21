@@ -99,6 +99,23 @@ bool WriteUtf8BomTextFile(const std::wstring& path, const std::string& utf8)
     return true;
 }
 
+// TinTin++ #read files must be UTF-8 without a BOM.
+// Strip an accidental UTF-8 BOM from the supplied bytes as an extra safeguard.
+bool WriteUtf8NoBomTextFile(const std::wstring& path, const std::string& utf8)
+{
+    size_t offset = 0;
+    if (utf8.size() >= 3 &&
+        static_cast<unsigned char>(utf8[0]) == 0xEF &&
+        static_cast<unsigned char>(utf8[1]) == 0xBB &&
+        static_cast<unsigned char>(utf8[2]) == 0xBF)
+    {
+        offset = 3;
+    }
+
+    const void* data = (offset < utf8.size()) ? utf8.data() + offset : nullptr;
+    return WriteBytesToFile(path, data, utf8.size() - offset, false);
+}
+
 // ==============================================
 // 1. 문자열 처리 유틸
 // ==============================================

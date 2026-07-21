@@ -233,9 +233,10 @@ static bool MemoDoOpenDialog(HWND hwnd)
     ofn.hwndOwner = hwnd;
 
     // ★ 필터 변경: txt와 tin을 동시에 보여주는 '지원 파일' 항목을 첫 번째로 배치
-    ofn.lpstrFilter =
-        L"모든 지원 파일 (*.txt; *.tin; *.c; *.cpp; *.h; *.hpp; *.cs)\0*.txt;*.tin;*.c;*.cpp;*.h;*.hpp;*.cs\0"
+ofn.lpstrFilter =
+        L"모든 지원 파일 (*.txt; *.tin; *.cap; *.c; *.cpp; *.h; *.hpp; *.cs)\0*.txt;*.tin;*.cap;*.c;*.cpp;*.h;*.hpp;*.cs\0"
         L"텍스트 파일 (*.txt)\0*.txt\0"
+        L"이야기 캡처 파일 (*.cap)\0*.cap\0"
         L"TinTin 스크립트 (*.tin)\0*.tin\0"
         L"C / C++ 소스 (*.c; *.cpp; *.h; *.hpp)\0*.c;*.cpp;*.h;*.hpp\0"
         L"C# 소스 (*.cs)\0*.cs\0"
@@ -268,6 +269,7 @@ static bool MemoDoSaveDialog(HWND hwnd, bool saveAs)
     // ★ 저장 시에도 사용자가 형식을 고를 수 있도록 필터 제공
     ofn.lpstrFilter =
         L"텍스트 파일 (*.txt)\0*.txt\0"
+        L"이야기 캡처 파일 (*.cap)\0*.cap\0"
         L"TinTin 스크립트 (*.tin)\0*.tin\0"
         L"모든 파일 (*.*)\0*.*\0";
 

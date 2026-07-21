@@ -4,7 +4,7 @@
 // KTin GUI 표시와 리소스에 사용하는 중앙 버전.
 #define KTIN_APP_VER_MAJOR 2
 #define KTIN_APP_VER_MINOR 7
-#define KTIN_APP_VER_PATCH 12
+#define KTIN_APP_VER_PATCH 15
 #define KTIN_APP_VER_BUILD 0
 #define KTIN_APP_VER_ALPHA_INDEX 0
 

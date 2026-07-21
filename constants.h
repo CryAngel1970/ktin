@@ -221,7 +221,7 @@ static const int ID_FIND_UP = 4805;
 static const int ID_FIND_DOWN = 4806;
 static const int ID_FIND_BUTTON = 4807;
 static const int ID_FIND_CANCEL = 4808;
-static const int ID_MENU_EDIT_HIGHLIGHT = 4809;
+static const int ID_MENU_EDIT_TRIGGER = 4809;
 
 static const int ID_MENU_EDIT_COPY_PAST = 4810;
 static const int ID_MENU_EDIT_SAVE_PAST = 4811;
