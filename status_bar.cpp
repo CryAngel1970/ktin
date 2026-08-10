@@ -325,6 +325,7 @@ void CreateMainMenu(HWND hwnd)
 
     AddODItem(hMenuEdit.Get(), ID_MENU_FIND_DIALOG, L"찾기...\tCtrl+F");
     AddODItem(hMenuEdit.Get(), ID_MENU_EDIT_TRIGGER, L"트리거 편집(&A)...");
+    AddODItem(hMenuEdit.Get(), ID_MENU_EDIT_HIGHLIGHT, L"하이라이트 편집(&H)...");
     AddODItem(hMenuEdit.Get(), ID_MENU_EDIT_VARIABLE, L"변수 설정(&V)...");
     AddODItem(hMenuEdit.Get(), ID_MENU_EDIT_ABBREVIATION, L"줄임말 설정(&B)...");
     AddODItem(hMenuEdit.Get(), ID_MENU_EDIT_FUNCTION_SHORTCUT, L"단축키 설정(&K)...");

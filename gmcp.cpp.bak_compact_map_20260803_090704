@@ -33,8 +33,6 @@ namespace
     constexpr int ID_GMCP_INFO_TEXT = 7305;
     constexpr int ID_GMCP_ZOOM_OUT = 7306;
     constexpr int ID_GMCP_ZOOM_IN = 7307;
-    constexpr int ID_GMCP_SAVE = 7308;
-    constexpr int ID_GMCP_SIZE_GRIP = 7309;
     constexpr UINT_PTR ID_GMCP_STEP_TIMER = 7303;
     constexpr UINT_PTR ID_GMCP_WAIT_TIMER = 7304;
 
@@ -42,8 +40,8 @@ namespace
     constexpr int kDockGap = 0;
     constexpr int kDockSnapDistance = 48;
     constexpr int kDefaultPanelWidth = 380;
-    constexpr int kMinimumPanelWidth = 380;
-    constexpr int kMaximumPanelWidth = 4096;
+    constexpr int kMinimumPanelWidth = 300;
+    constexpr int kMaximumPanelWidth = 760;
     constexpr int kDwmExtendedFrameBounds = 9;
     constexpr int kInfoTextTop = 82;
 
@@ -79,8 +77,6 @@ namespace
         std::vector<std::wstring> roomTitles;
         std::vector<std::wstring> roomPaths;
         std::vector<std::vector<std::pair<int, std::wstring>>> roomLinks;
-        std::wstring mapId;
-        std::wstring mapRevision;
         int currentRoomIndex = -1;
         bool haveRoomGraph = false;
         std::wstring hoverRoomTitle;
@@ -120,7 +116,6 @@ namespace
     bool g_infoRawVisible = false;
     bool g_adjustingInfoLayout = false;
     bool g_trackingMapMouse = false;
-    bool g_mapUserSized = false;
 
     std::mutex g_terminalVitalsMutex;
     std::wstring g_terminalVitalsTail;
@@ -495,7 +490,7 @@ namespace
         HWND windows[2] = { g_hwndMap, g_hwndInfo };
         for (HWND wnd : windows)
         {
-            if (!wnd || !IsWindow(wnd) || IsIconic(wnd) || IsZoomed(wnd))
+            if (!wnd || !IsWindow(wnd))
                 continue;
             RECT rc{};
             GetWindowRect(wnd, &rc);
@@ -520,10 +515,8 @@ namespace
         RECT mainVisible = mainFrame.visible;
         RECT work = WorkAreaForWindow(g_app->hwndMain);
 
-        bool mapVisible = g_hwndMap && IsWindow(g_hwndMap) && IsWindowVisible(g_hwndMap) &&
-            !IsIconic(g_hwndMap) && !IsZoomed(g_hwndMap);
-        bool infoVisible = g_hwndInfo && IsWindow(g_hwndInfo) && IsWindowVisible(g_hwndInfo) &&
-            !IsIconic(g_hwndInfo) && !IsZoomed(g_hwndInfo);
+        bool mapVisible = g_hwndMap && IsWindow(g_hwndMap) && IsWindowVisible(g_hwndMap);
+        bool infoVisible = g_hwndInfo && IsWindow(g_hwndInfo) && IsWindowVisible(g_hwndInfo);
         HWND widthReference = mapVisible ? g_hwndMap : g_hwndInfo;
         int panelVisibleWidth = VisibleWidthForOuter(widthReference, g_panelOuterWidth);
         int visibleLeft = g_dockSide < 0
@@ -914,42 +907,6 @@ namespace
         }
     }
 
-
-    bool ExtractJsonIntegerArray(const std::string& json, const std::string& key,
-        std::vector<int>& values)
-    {
-        size_t pos = 0;
-        if (!FindJsonKeyValueStart(json, key, pos) || pos >= json.size() || json[pos] != '[')
-            return false;
-
-        ++pos;
-        values.clear();
-        for (;;)
-        {
-            SkipSpaces(json, pos);
-            if (pos >= json.size()) return false;
-            if (json[pos] == ']') return true;
-
-            char* end = nullptr;
-            long value = std::strtol(json.c_str() + pos, &end, 10);
-            if (!end || end == json.c_str() + pos)
-                return false;
-            pos = static_cast<size_t>(end - json.c_str());
-            values.push_back(static_cast<int>(value));
-
-            SkipSpaces(json, pos);
-            if (pos >= json.size()) return false;
-            if (json[pos] == ',')
-            {
-                ++pos;
-                continue;
-            }
-            if (json[pos] == ']')
-                return true;
-            return false;
-        }
-    }
-
     bool ExtractJsonNumber(const std::string& json, const std::vector<std::string>& keys, double& value)
     {
         for (const std::string& key : keys)
@@ -1282,82 +1239,25 @@ namespace
         }
     }
 
-    // KTin 2.7.19 compact map packet
-    bool UpdateMap(const std::string& json)
+    void UpdateMap(const std::string& json)
     {
         std::string zone;
-        std::string mapId;
-        std::string revision;
         std::string currentRoom;
         std::vector<std::string> lines;
         std::vector<std::string> titles;
-        std::vector<std::string> titleTable;
         std::vector<std::string> paths;
         std::vector<std::string> links;
-        std::vector<int> titleIds;
-        double partialValue = 0.0;
-        double currentIndexValue = -1.0;
-
-        const bool partial = ExtractJsonNumber(json, { "partial" }, partialValue) &&
-            partialValue != 0.0;
-        const bool haveMapId = ExtractJsonString(json, "map_id", mapId);
-        const bool haveRevision = ExtractJsonString(json, "revision", revision);
-        const bool haveCurrentIndex = ExtractJsonNumber(
-            json, { "current_index" }, currentIndexValue);
-
-        if (partial)
-        {
-            if (!haveMapId || !haveRevision || g_model.mapId.empty() ||
-                g_model.mapRevision.empty() || Utf8ToWide(mapId) != g_model.mapId ||
-                Utf8ToWide(revision) != g_model.mapRevision || !haveCurrentIndex)
-            {
-                g_model.routeStatus = L"지도 전체 자료를 다시 받아야 합니다.";
-                return false;
-            }
-
-            int index = static_cast<int>(currentIndexValue);
-            if (index < 0 || index >= static_cast<int>(g_model.roomLinks.size()))
-                return false;
-            g_model.currentRoomIndex = index;
-            g_model.haveRoomGraph = !g_model.roomLinks.empty();
-            g_model.hoverRoomTitle.clear();
-            return true;
-        }
-
         if (ExtractJsonString(json, "zone", zone))
             g_model.zone = Utf8ToWide(zone);
-        if (haveMapId)
-            g_model.mapId = Utf8ToWide(mapId);
-        else
-            g_model.mapId.clear();
-        if (haveRevision)
-            g_model.mapRevision = Utf8ToWide(revision);
-        else
-            g_model.mapRevision.clear();
-
-        if (!ExtractJsonStringArray(json, "lines", lines))
-            return false;
-        g_model.mapLines.clear();
-        g_model.mapLines.reserve(lines.size());
-        for (const std::string& line : lines)
-            g_model.mapLines.push_back(Utf8ToWide(line));
-
-        g_model.roomTitles.clear();
-        const bool compactTitles =
-            ExtractJsonStringArray(json, "title_table", titleTable) &&
-            ExtractJsonIntegerArray(json, "room_title_ids", titleIds);
-        if (compactTitles)
+        if (ExtractJsonStringArray(json, "lines", lines))
         {
-            g_model.roomTitles.reserve(titleIds.size());
-            for (int id : titleIds)
-            {
-                if (id >= 0 && id < static_cast<int>(titleTable.size()))
-                    g_model.roomTitles.push_back(Utf8ToWide(titleTable[static_cast<size_t>(id)]));
-                else
-                    g_model.roomTitles.push_back(L"");
-            }
+            g_model.mapLines.clear();
+            g_model.mapLines.reserve(lines.size());
+            for (const std::string& line : lines)
+                g_model.mapLines.push_back(Utf8ToWide(line));
         }
-        else if (ExtractJsonStringArray(json, "room_titles", titles))
+        g_model.roomTitles.clear();
+        if (ExtractJsonStringArray(json, "room_titles", titles))
         {
             g_model.roomTitles.reserve(titles.size());
             for (const std::string& title : titles)
@@ -1368,15 +1268,9 @@ namespace
         g_model.roomLinks.clear();
         g_model.currentRoomIndex = -1;
         g_model.haveRoomGraph = false;
-
-        const bool havePaths = ExtractJsonStringArray(json, "room_paths", paths);
-        const bool haveLinks = ExtractJsonStringArray(json, "room_links", links);
-        if (compactTitles && haveCurrentIndex)
-        {
-            g_model.roomLinks.resize(g_model.roomTitles.size());
-            g_model.currentRoomIndex = static_cast<int>(currentIndexValue);
-        }
-        else if (havePaths && ExtractJsonString(json, "current_room", currentRoom))
+        bool havePaths = ExtractJsonStringArray(json, "room_paths", paths);
+        bool haveLinks = ExtractJsonStringArray(json, "room_links", links);
+        if (havePaths && ExtractJsonString(json, "current_room", currentRoom))
         {
             g_model.roomPaths.reserve(paths.size());
             for (const std::string& path : paths)
@@ -1392,42 +1286,39 @@ namespace
                     break;
                 }
             }
-        }
 
-        if (haveLinks && !g_model.roomLinks.empty())
-        {
-            for (const std::string& record : links)
+            if (haveLinks)
             {
-                size_t first = record.find('\t');
-                size_t second = first == std::string::npos
-                    ? std::string::npos : record.find('\t', first + 1);
-                if (first == std::string::npos || second == std::string::npos)
-                    continue;
-
-                char* endFrom = nullptr;
-                char* endTo = nullptr;
-                long from = std::strtol(record.c_str(), &endFrom, 10);
-                long to = std::strtol(record.c_str() + second + 1, &endTo, 10);
-                if (!endFrom || endFrom != record.c_str() + first ||
-                    !endTo || *endTo != '\0' || from < 0 || to < 0 ||
-                    from >= static_cast<long>(g_model.roomLinks.size()) ||
-                    to >= static_cast<long>(g_model.roomLinks.size()))
-                    continue;
-
-                std::wstring command = Utf8ToWide(
-                    record.substr(first + 1, second - first - 1));
-                if (!command.empty())
+                for (const std::string& record : links)
                 {
-                    g_model.roomLinks[static_cast<size_t>(from)].push_back(
-                        { static_cast<int>(to), std::move(command) });
+                    size_t first = record.find('\t');
+                    size_t second = first == std::string::npos
+                        ? std::string::npos : record.find('\t', first + 1);
+                    if (first == std::string::npos || second == std::string::npos)
+                        continue;
+
+                    char* endFrom = nullptr;
+                    char* endTo = nullptr;
+                    long from = std::strtol(record.c_str(), &endFrom, 10);
+                    long to = std::strtol(record.c_str() + second + 1, &endTo, 10);
+                    if (!endFrom || endFrom != record.c_str() + first ||
+                        !endTo || *endTo != '\0' || from < 0 || to < 0 ||
+                        from >= static_cast<long>(g_model.roomLinks.size()) ||
+                        to >= static_cast<long>(g_model.roomLinks.size()))
+                        continue;
+
+                    std::wstring command = Utf8ToWide(
+                        record.substr(first + 1, second - first - 1));
+                    if (!command.empty())
+                    {
+                        g_model.roomLinks[static_cast<size_t>(from)].push_back(
+                            { static_cast<int>(to), std::move(command) });
+                    }
                 }
             }
+            g_model.haveRoomGraph = haveLinks && g_model.currentRoomIndex >= 0;
         }
-
-        g_model.haveRoomGraph = haveLinks && g_model.currentRoomIndex >= 0 &&
-            g_model.currentRoomIndex < static_cast<int>(g_model.roomLinks.size());
         g_model.hoverRoomTitle.clear();
-        return true;
     }
 
     void ApplyFontsToGmcpWindows()
@@ -1442,12 +1333,10 @@ namespace
             HWND cancel = GetDlgItem(g_hwndMap, ID_GMCP_CANCEL);
             HWND zoomOut = GetDlgItem(g_hwndMap, ID_GMCP_ZOOM_OUT);
             HWND zoomIn = GetDlgItem(g_hwndMap, ID_GMCP_ZOOM_IN);
-            HWND save = GetDlgItem(g_hwndMap, ID_GMCP_SAVE);
             if (retry) SendMessageW(retry, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont), TRUE);
             if (cancel) SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont), TRUE);
             if (zoomOut) SendMessageW(zoomOut, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont), TRUE);
             if (zoomIn) SendMessageW(zoomIn, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont), TRUE);
-            if (save) SendMessageW(save, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont), TRUE);
             InvalidateRect(g_hwndMap, nullptr, FALSE);
         }
 
@@ -1754,72 +1643,8 @@ namespace
         InvalidateRect(g_hwndInfoText, nullptr, TRUE);
     }
 
-    std::wstring SanitizeMapFileName(std::wstring name)
-    {
-        name = Trim(name);
-        if (name.empty())
-            name = L"GMCP지도";
-
-        const std::wstring invalid = L"<>:\"/\\|?*";
-        for (wchar_t& ch : name)
-        {
-            if (ch < 32 || invalid.find(ch) != std::wstring::npos)
-                ch = L'_';
-        }
-        while (!name.empty() && (name.back() == L'.' || name.back() == L' '))
-            name.pop_back();
-        if (name.empty())
-            name = L"GMCP지도";
-        return name;
-    }
-
-    bool SaveCurrentMap(HWND owner)
-    {
-        if (g_model.mapLines.empty())
-        {
-            ShowCenteredMessageBox(owner, L"저장할 GMCP 지도가 아직 없습니다.",
-                L"GMCP 지도 저장", MB_OK | MB_ICONINFORMATION);
-            return false;
-        }
-
-        const std::wstring mapDir = MakeAbsolutePath(GetModuleDirectory(), L"map");
-        if (!CreateDirectoryW(mapDir.c_str(), nullptr) &&
-            GetLastError() != ERROR_ALREADY_EXISTS)
-        {
-            ShowCenteredMessageBox(owner, L"map 폴더를 만들지 못했습니다.",
-                L"GMCP 지도 저장", MB_OK | MB_ICONERROR);
-            return false;
-        }
-
-        const std::wstring fileName = SanitizeMapFileName(g_model.zone) + L".txt";
-        const std::wstring path = MakeAbsolutePath(mapDir, fileName);
-        std::wstring text;
-        for (size_t i = 0; i < g_model.mapLines.size(); ++i)
-        {
-            text += g_model.mapLines[i];
-            if (i + 1 < g_model.mapLines.size())
-                text += L"\r\n";
-        }
-        text += L"\r\n";
-
-        if (!WriteUtf8BomTextFile(path, WideToUtf8(text)))
-        {
-            ShowCenteredMessageBox(owner, L"GMCP 지도 파일을 저장하지 못했습니다.",
-                L"GMCP 지도 저장", MB_OK | MB_ICONERROR);
-            return false;
-        }
-
-        const std::wstring message = L"현재 지도를 저장했습니다.\n\n" + path;
-        ShowCenteredMessageBox(owner, message.c_str(), L"GMCP 지도 저장",
-            MB_OK | MB_ICONINFORMATION);
-        return true;
-    }
-
     void AutoFitMapWindow()
     {
-        if (g_mapUserSized || (g_hwndMap && (IsZoomed(g_hwndMap) || IsIconic(g_hwndMap))))
-            return;
-
         MapGrid grid = BuildMapGrid();
         SIZE cell = MapCellSize(g_hwndMap);
         int cellW = std::max(1, static_cast<int>(cell.cx));
@@ -1831,10 +1656,8 @@ namespace
 
         RECT outer{ 0, 0, desiredClientWidth, desiredClientHeight };
         AdjustWindowRectEx(&outer,
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
-            WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN |
-            WS_HSCROLL | WS_VSCROLL,
-            FALSE, 0);
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_HSCROLL | WS_VSCROLL,
+            FALSE, WS_EX_TOOLWINDOW);
         g_panelOuterWidth = ClampPanelWidth(outer.right - outer.left);
         g_mapOuterHeight = std::max(220,
             static_cast<int>(outer.bottom - outer.top));
@@ -1856,13 +1679,11 @@ namespace
 
         if (packet.module == "Looming.Map")
         {
-            if (UpdateMap(packet.json))
-            {
-                OnMapPacketReceived();
-                AutoFitMapWindow();
-                if (g_hwndMap && IsWindow(g_hwndMap))
-                    CenterMapOnCurrentRoom(g_hwndMap);
-            }
+            UpdateMap(packet.json);
+            OnMapPacketReceived();
+            AutoFitMapWindow();
+            if (g_hwndMap && IsWindow(g_hwndMap))
+                CenterMapOnCurrentRoom(g_hwndMap);
         }
 
         UpdateInfoTextControl();
@@ -1895,16 +1716,6 @@ namespace
                 0, 0, 58, 26, hwnd,
                 reinterpret_cast<HMENU>(ID_GMCP_ZOOM_IN),
                 GetModuleHandleW(nullptr), nullptr);
-            HWND save = CreateWindowW(L"BUTTON", L"저장",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                0, 0, 58, 26, hwnd,
-                reinterpret_cast<HMENU>(ID_GMCP_SAVE),
-                GetModuleHandleW(nullptr), nullptr);
-            CreateWindowExW(0, L"SCROLLBAR", nullptr,
-                WS_CHILD | WS_VISIBLE | SBS_SIZEGRIP,
-                0, 0, 18, 18, hwnd,
-                reinterpret_cast<HMENU>(ID_GMCP_SIZE_GRIP),
-                GetModuleHandleW(nullptr), nullptr);
             if (retry) SendMessageW(retry, WM_SETFONT,
                 reinterpret_cast<WPARAM>(UiFont()), TRUE);
             if (cancel) SendMessageW(cancel, WM_SETFONT,
@@ -1912,8 +1723,6 @@ namespace
             if (zoomOut) SendMessageW(zoomOut, WM_SETFONT,
                 reinterpret_cast<WPARAM>(UiFont()), TRUE);
             if (zoomIn) SendMessageW(zoomIn, WM_SETFONT,
-                reinterpret_cast<WPARAM>(UiFont()), TRUE);
-            if (save) SendMessageW(save, WM_SETFONT,
                 reinterpret_cast<WPARAM>(UiFont()), TRUE);
             UpdateMapScrollBars(hwnd);
             return 0;
@@ -1925,55 +1734,30 @@ namespace
             int height = HIWORD(lParam);
             HWND retry = GetDlgItem(hwnd, ID_GMCP_RETRY);
             HWND cancel = GetDlgItem(hwnd, ID_GMCP_CANCEL);
-            if (wParam == SIZE_MINIMIZED)
-                return 0;
-
             HWND zoomOut = GetDlgItem(hwnd, ID_GMCP_ZOOM_OUT);
             HWND zoomIn = GetDlgItem(hwnd, ID_GMCP_ZOOM_IN);
-            HWND save = GetDlgItem(hwnd, ID_GMCP_SAVE);
-            HWND grip = GetDlgItem(hwnd, ID_GMCP_SIZE_GRIP);
             int y = std::max(4, height - 32);
-            const int actionWidth = 70;
-            const int zoomButtonWidth = 48;
-            const int saveWidth = 56;
+            const int buttonWidth = 76;
+            const int zoomButtonWidth = 50;
             const int buttonGap = 6;
-            const int groupWidth = actionWidth * 2 + zoomButtonWidth * 2 + saveWidth + buttonGap * 4;
-            const int startX = std::max(6, (width - groupWidth) / 2);
+            const int groupWidth = buttonWidth * 2 + zoomButtonWidth * 2 + buttonGap * 3;
+            const int startX = std::max(8, (width - groupWidth) / 2);
             int x = startX;
             if (zoomOut) MoveWindow(zoomOut, x, y, zoomButtonWidth, 26, TRUE);
             x += zoomButtonWidth + buttonGap;
             if (zoomIn) MoveWindow(zoomIn, x, y, zoomButtonWidth, 26, TRUE);
             x += zoomButtonWidth + buttonGap;
-            if (retry) MoveWindow(retry, x, y, actionWidth, 26, TRUE);
-            x += actionWidth + buttonGap;
-            if (cancel) MoveWindow(cancel, x, y, actionWidth, 26, TRUE);
-            x += actionWidth + buttonGap;
-            if (save) MoveWindow(save, x, y, saveWidth, 26, TRUE);
-            if (grip) MoveWindow(grip, std::max(0, width - 18), std::max(0, height - 18), 18, 18, TRUE);
-
-            if (wParam == SIZE_MAXIMIZED)
-                g_mapUserSized = true;
+            if (retry) MoveWindow(retry, x, y, buttonWidth, 26, TRUE);
+            x += buttonWidth + buttonGap;
+            if (cancel) MoveWindow(cancel, x, y, buttonWidth, 26, TRUE);
 
             UpdateMapScrollBars(hwnd);
-            if (!IsZoomed(hwnd) && !IsIconic(hwnd) &&
-                !g_syncingPanelWidth && !g_syncingDockLayout)
+            if (!g_syncingPanelWidth && !g_syncingDockLayout)
             {
                 RECT rc{};
                 GetWindowRect(hwnd, &rc);
                 g_mapOuterHeight = rc.bottom - rc.top;
                 SyncPanelWidths(hwnd, rc.right - rc.left);
-            }
-            return 0;
-        }
-
-
-        case WM_GETMINMAXINFO:
-        {
-            auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            if (info)
-            {
-                info->ptMinTrackSize.x = kMinimumPanelWidth;
-                info->ptMinTrackSize.y = 220;
             }
             return 0;
         }
@@ -2056,7 +1840,6 @@ namespace
         }
 
         case WM_EXITSIZEMOVE:
-            g_mapUserSized = true;
             UpdateDockSideFromMovedWindow(hwnd);
             return 0;
 
@@ -2080,11 +1863,6 @@ namespace
             if (LOWORD(wParam) == ID_GMCP_ZOOM_IN)
             {
                 SetMapZoomPercent(hwnd, g_mapZoomPercent + 10);
-                return 0;
-            }
-            if (LOWORD(wParam) == ID_GMCP_SAVE)
-            {
-                SaveCurrentMap(hwnd);
                 return 0;
             }
             break;
@@ -2559,12 +2337,9 @@ void ShowGmcpMapWindow(HWND owner)
 
     if (!g_hwndMap || !IsWindow(g_hwndMap))
     {
-        g_mapUserSized = false;
-        g_hwndMap = CreateWindowExW(0,
+        g_hwndMap = CreateWindowExW(WS_EX_TOOLWINDOW,
             kMapWindowClass, L"KTin GMCP 지도",
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
-            WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN |
-            WS_HSCROLL | WS_VSCROLL,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_HSCROLL | WS_VSCROLL,
             CW_USEDEFAULT, CW_USEDEFAULT,
             g_panelOuterWidth, g_mapOuterHeight,
             owner, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -2573,7 +2348,7 @@ void ShowGmcpMapWindow(HWND owner)
     if (g_hwndMap)
     {
         AutoFitMapWindow();
-        ShowWindow(g_hwndMap, IsIconic(g_hwndMap) ? SW_RESTORE : SW_SHOW);
+        ShowWindow(g_hwndMap, SW_SHOWNORMAL);
         ApplyFontsToGmcpWindows();
         DockGmcpWindowsToMainInternal();
         SetForegroundWindow(g_hwndMap);

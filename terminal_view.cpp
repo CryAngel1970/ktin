@@ -16,6 +16,7 @@
 static bool s_logDragging = false;
 static POINT s_logMouseDownPt = { 0, 0 };
 static POINT s_logLastMouseClientPt = { 0, 0 };
+static int s_logScrollCol = 0;
 static const UINT_PTR ID_TIMER_LOG_DRAG_SCROLL = 30021;
 static const UINT LOG_DRAG_SCROLL_INTERVAL_MS = 50;
 
@@ -170,17 +171,84 @@ static void ComputeTerminalOffsetFromLayout(HWND hwnd, const TerminalBufferMetri
     const int areaW = max(0, clientW - ml - mr);
     const int areaH = max(0, clientH - mt - mb);
 
-    if (g_app->termAlign == 0)
+    if (gridW > areaW)
+    {
+        const int visibleCols = max(1, areaW / max(1, static_cast<int>(cell.cx)));
+        const int maxLeft = max(0, metrics.width - visibleCols);
+        s_logScrollCol = ClampInt(s_logScrollCol, 0, maxLeft);
+        offsetX = ml - s_logScrollCol * cell.cx;
+    }
+    else if (g_app->termAlign == 0)
+    {
+        s_logScrollCol = 0;
         offsetX = ml;
+    }
     else if (g_app->termAlign == 2)
+    {
+        s_logScrollCol = 0;
         offsetX = max(ml, clientW - mr - gridW);
+    }
     else
+    {
+        s_logScrollCol = 0;
         offsetX = ml + max(0, (areaW - gridW) / 2);
+    }
 
     if (gridH > areaH)
         offsetY = clientH - mb - gridH;
     else
         offsetY = mt + max(0, (areaH - gridH) / 2);
+}
+
+static void UpdateLogHorizontalScrollBar(HWND hwnd)
+{
+    if (!hwnd || !IsWindow(hwnd) || !g_app || !g_app->termBuffer)
+        return;
+
+    TerminalBufferMetrics metrics = g_app->termBuffer->GetMetrics();
+    SIZE cell = GetLogCellPixelSize(hwnd);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+
+    int ml = max(0, g_app->termMarginLeft);
+    int mr = max(0, g_app->termMarginRight);
+    const int areaW = max(1, RectWidth(rc) - ml - mr);
+    const int visibleCols = max(1, areaW / max(1, static_cast<int>(cell.cx)));
+    const int maxLeft = max(0, metrics.width - visibleCols);
+    s_logScrollCol = ClampInt(s_logScrollCol, 0, maxLeft);
+
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin = 0;
+    si.nMax = max(0, metrics.width - 1);
+    si.nPage = static_cast<UINT>(visibleCols);
+    si.nPos = s_logScrollCol;
+    SetScrollInfo(hwnd, SB_HORZ, &si, TRUE);
+    ShowScrollBar(hwnd, SB_HORZ, metrics.width > visibleCols);
+}
+
+static void SetLogHorizontalColumn(HWND hwnd, int column)
+{
+    if (!hwnd || !IsWindow(hwnd) || !g_app || !g_app->termBuffer)
+        return;
+
+    TerminalBufferMetrics metrics = g_app->termBuffer->GetMetrics();
+    SIZE cell = GetLogCellPixelSize(hwnd);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int areaW = max(1, RectWidth(rc) -
+        max(0, g_app->termMarginLeft) - max(0, g_app->termMarginRight));
+    const int visibleCols = max(1, areaW / max(1, static_cast<int>(cell.cx)));
+    const int maxLeft = max(0, metrics.width - visibleCols);
+    const int next = ClampInt(column, 0, maxLeft);
+    if (next == s_logScrollCol)
+        return;
+
+    s_logScrollCol = next;
+    UpdateLogHorizontalScrollBar(hwnd);
+    g_app->termBuffer->MarkAllDirty();
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 static bool GetTerminalRowInvalidateLayout(HWND hwnd, TerminalBufferMetrics& metrics, SIZE& cell, int& offsetX, int& offsetY)
@@ -518,6 +586,7 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         if (g_app && g_app->termBuffer && g_app->hFontLog)
         {
+            UpdateLogHorizontalScrollBar(hwnd);
             TerminalBufferMetrics metrics = g_app->termBuffer->GetMetrics();
             SIZE cell = GetLogCellPixelSize(hwnd);
 
@@ -756,6 +825,30 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         if (oldBackBitmap)
             SelectObject(memDc.Get(), oldBackBitmap);
+        return 0;
+    }
+
+    case WM_HSCROLL:
+    {
+        if (!g_app || !g_app->termBuffer) return 0;
+        SCROLLINFO si{};
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_ALL;
+        GetScrollInfo(hwnd, SB_HORZ, &si);
+        int column = s_logScrollCol;
+        switch (LOWORD(wParam))
+        {
+        case SB_LINELEFT: column -= 1; break;
+        case SB_LINERIGHT: column += 1; break;
+        case SB_PAGELEFT: column -= static_cast<int>(si.nPage); break;
+        case SB_PAGERIGHT: column += static_cast<int>(si.nPage); break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: column = si.nTrackPos; break;
+        case SB_LEFT: column = 0; break;
+        case SB_RIGHT: column = si.nMax; break;
+        default: return 0;
+        }
+        SetLogHorizontalColumn(hwnd, column);
         return 0;
     }
 
@@ -1074,8 +1167,16 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     {
         if (g_app && g_app->termBuffer) {
             int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-            g_app->termBuffer->DoScroll(zDelta > 0 ? 3 : -3);
-            InvalidateTerminalDirtyRows(hwnd);
+            if ((GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT) != 0)
+            {
+                SetLogHorizontalColumn(hwnd,
+                    s_logScrollCol + (zDelta > 0 ? -3 : 3));
+            }
+            else
+            {
+                g_app->termBuffer->DoScroll(zDelta > 0 ? 3 : -3);
+                InvalidateTerminalDirtyRows(hwnd);
+            }
         }
         return 0;
     }
@@ -1084,6 +1185,7 @@ LRESULT CALLBACK TerminalWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_SIZE:
         if (g_app && g_app->termBuffer)
             g_app->termBuffer->MarkAllDirty();
+        UpdateLogHorizontalScrollBar(hwnd);
         InvalidateTerminalAllRows(hwnd, FALSE);
         return 0;
     default: return DefWindowProcW(hwnd, msg, wParam, lParam);

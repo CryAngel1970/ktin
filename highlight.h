@@ -1,21 +1,9 @@
 #pragma once
-#include "constants.h"
-#include "types.h" // ★ 새로 만든 구조체들을 여기서 인식하게 함!
 
-struct HighlightState
-{
-    std::vector<HighlightRule> rules;
-    bool active = false;
-};
+#include <windows.h>
 
-// 외부에서 접근 가능한 전역 상태
-extern HighlightState g_hiState;
-
-// 공개 함수
+// 하이라이트는 TinTin++ 스크립트 파일 안의 #highlight/#class 구문으로 관리합니다.
+// 이전 config.ini 기반 하이라이트 설정 함수는 호환용으로 남겨 두되 더 이상 자료를 저장하지 않습니다.
 void LoadHighlightSettings();
 void SaveHighlightSettings();
 void ShowHighlightDialog(HWND owner);
-
-void ExecuteHighlightRuleAction(const HighlightRule& rule, const std::vector<std::wstring>& caps);
-bool MatchHighlightPattern(const std::wstring& pattern, const std::wstring& text, std::vector<std::wstring>& caps);
-std::wstring ExpandHighlightCaptures(const std::wstring& src, const std::vector<std::wstring>& caps);

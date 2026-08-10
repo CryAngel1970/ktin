@@ -723,9 +723,6 @@ LRESULT HandleMainCreate(HWND hwnd)
     LoadAddressBook();
     LoadQuickConnectHistory();
     LoadHighlightSettings();
-    
-    g_hiState.active = false;
-    g_hiState.rules.clear();
     g_app->chatCaptureEnabled = false;
     g_app->chatVisible = false;
     g_app->chatTimestampEnabled = false;
@@ -764,7 +761,9 @@ LRESULT HandleMainCreate(HWND hwnd)
     if (!g_app->termBuffer)
         return FailMainCreate(hwnd, L"터미널 버퍼 초기화에 실패했습니다.");
     
-    g_app->hwndLog = CreateWindowExW(0, kTerminalWindowClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    g_app->hwndLog = CreateWindowExW(0, kTerminalWindowClass, L"",
+        WS_CHILD | WS_VISIBLE | WS_HSCROLL,
+        0, 0, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     
     g_app->hwndInput = CreateWindowExW(0, kInputContainerClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, 100, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     g_app->hwndStatusBar = CreateWindowExW(0, kStatusBarClass, L"", WS_CHILD | WS_VISIBLE, 0, 0, 100, STATUS_BAR_HEIGHT, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -1701,6 +1700,12 @@ switch (LOWORD(wParam))
         case ID_MENU_EDIT_TRIGGER:
         {
             PromptTriggerEditor(hwnd);
+            RefocusActiveInput();
+            return true;
+        }
+        case ID_MENU_EDIT_HIGHLIGHT:
+        {
+            ShowHighlightDialog(hwnd);
             RefocusActiveInput();
             return true;
         }

@@ -609,7 +609,7 @@ static LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             int newCols = _wtoi(buf);
             GetWindowTextW(GetDlgItem(hwnd, ID_SET_EDIT_ROWS), buf, 256);
             int newRows = _wtoi(buf);
-            if (newCols >= 20 && newCols <= 300) g_app->screenCols = newCols;
+            if (newCols >= 20 && newCols <= 600) g_app->screenCols = newCols;
             if (newRows >= 5 && newRows <= 200) g_app->screenRows = newRows;
 
             GetWindowTextW(GetDlgItem(hwnd, ID_SET_MARGIN_LEFT), buf, 256);
@@ -943,7 +943,7 @@ void LoadScreenSizeSettings()
     g_app->screenCols = GetPrivateProfileIntW(L"screen_size", L"cols", 80, path.c_str());
     g_app->screenRows = GetPrivateProfileIntW(L"screen_size", L"rows", 32, path.c_str());
     if (g_app->screenCols < 20) g_app->screenCols = 20;
-    if (g_app->screenCols > 300) g_app->screenCols = 300;
+    if (g_app->screenCols > 600) g_app->screenCols = 600;
     if (g_app->screenRows < 5) g_app->screenRows = 5;
     if (g_app->screenRows > 200) g_app->screenRows = 200;
     g_app->termMarginLeft = GetPrivateProfileIntW(L"screen_size", L"margin_left", 0, path.c_str());
@@ -991,7 +991,7 @@ static LRESULT CALLBACK ScreenSizePopupProc(HWND hwnd, UINT msg, WPARAM wParam, 
                 GetWindowTextW(GetDlgItem(hwnd, ID_SCREEN_SIZE_ROWS), rowsBuf, 64);
                 int cols = _wtoi(colsBuf); int rows = _wtoi(rowsBuf);
                 if (cols < 20) cols = 20;
-                if (cols > 300) cols = 300;
+                if (cols > 600) cols = 600;
                 if (rows < 5) rows = 5;
                 if (rows > 200) rows = 200;
                 *state->cols = cols; *state->rows = rows;
