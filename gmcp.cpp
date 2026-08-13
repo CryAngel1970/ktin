@@ -1850,23 +1850,39 @@ namespace
 
     void ApplyPacket(const GmcpPacket& packet)
     {
+        bool mapUpdated = false;
+        bool partialMap = false;
+
         if (packet.module != "KTin.TerminalVitals")
             g_model.modules[packet.module] = packet.json;
         UpdateVitalsFromPacket(packet);
 
         if (packet.module == "Looming.Map")
         {
-            if (UpdateMap(packet.json))
+            double partialValue = 0.0;
+            partialMap = ExtractJsonNumber(
+                packet.json, { "partial" }, partialValue) &&
+                partialValue != 0.0;
+
+            mapUpdated = UpdateMap(packet.json);
+            if (mapUpdated)
             {
                 OnMapPacketReceived();
-                AutoFitMapWindow();
+                if (!partialMap)
+                    AutoFitMapWindow();
                 if (g_hwndMap && IsWindow(g_hwndMap))
                     CenterMapOnCurrentRoom(g_hwndMap);
             }
+
+            if (g_hwndMap && IsWindow(g_hwndMap))
+                InvalidateRect(g_hwndMap, nullptr, FALSE);
         }
 
-        UpdateInfoTextControl();
-        RefreshWindows();
+        if (packet.module != "KTin.TerminalVitals")
+            UpdateInfoTextControl();
+
+        if (g_hwndInfo && IsWindow(g_hwndInfo))
+            InvalidateRect(g_hwndInfo, nullptr, FALSE);
     }
 
     LRESULT CALLBACK MapWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
