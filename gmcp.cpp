@@ -60,6 +60,7 @@ namespace
         int y = 0;
         int roomIndex = -1;
         std::wstring title;
+        std::wstring address;
     };
 
     struct MapGrid
@@ -77,6 +78,7 @@ namespace
         std::wstring zone;
         std::vector<std::wstring> mapLines;
         std::vector<std::wstring> roomTitles;
+        std::vector<std::wstring> roomAddresses;
         std::vector<std::wstring> roomPaths;
         std::vector<std::vector<std::pair<int, std::wstring>>> roomLinks;
         std::wstring mapId;
@@ -84,6 +86,7 @@ namespace
         int currentRoomIndex = -1;
         bool haveRoomGraph = false;
         std::wstring hoverRoomTitle;
+        std::wstring hoverRoomAddress;
 
         double hp = 0.0;
         double maxHp = 0.0;
@@ -599,7 +602,7 @@ namespace
     int MapHeaderHeight(HWND hwnd)
     {
         SIZE cell = MapCellSize(hwnd);
-        return 8 + cell.cy * 2 + 8;
+        return 8 + cell.cy * 3 + 8;
     }
 
     int MapFooterHeight()
@@ -1292,6 +1295,7 @@ namespace
         std::vector<std::string> lines;
         std::vector<std::string> titles;
         std::vector<std::string> titleTable;
+        std::vector<std::string> addresses;
         std::vector<std::string> paths;
         std::vector<std::string> links;
         std::vector<int> titleIds;
@@ -1321,6 +1325,7 @@ namespace
             g_model.currentRoomIndex = index;
             g_model.haveRoomGraph = !g_model.roomLinks.empty();
             g_model.hoverRoomTitle.clear();
+            g_model.hoverRoomAddress.clear();
             return true;
         }
 
@@ -1362,6 +1367,14 @@ namespace
             g_model.roomTitles.reserve(titles.size());
             for (const std::string& title : titles)
                 g_model.roomTitles.push_back(Utf8ToWide(title));
+        }
+
+        g_model.roomAddresses.clear();
+        if (ExtractJsonStringArray(json, "room_addresses", addresses))
+        {
+            g_model.roomAddresses.reserve(addresses.size());
+            for (const std::string& address : addresses)
+                g_model.roomAddresses.push_back(Utf8ToWide(address));
         }
 
         g_model.roomPaths.clear();
@@ -1427,6 +1440,7 @@ namespace
         g_model.haveRoomGraph = haveLinks && g_model.currentRoomIndex >= 0 &&
             g_model.currentRoomIndex < static_cast<int>(g_model.roomLinks.size());
         g_model.hoverRoomTitle.clear();
+        g_model.hoverRoomAddress.clear();
         return true;
     }
 
@@ -2129,17 +2143,21 @@ namespace
         {
             POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             std::wstring title;
+            std::wstring address;
             for (const MapHit& hit : g_mapHits)
             {
                 if (PtInRect(&hit.rc, pt))
                 {
                     title = hit.title;
+                    address = hit.address;
                     break;
                 }
             }
-            if (title != g_model.hoverRoomTitle)
+            if (title != g_model.hoverRoomTitle ||
+                address != g_model.hoverRoomAddress)
             {
                 g_model.hoverRoomTitle = std::move(title);
+                g_model.hoverRoomAddress = std::move(address);
                 RECT header{};
                 GetClientRect(hwnd, &header);
                 header.bottom = MapHeaderHeight(hwnd);
@@ -2158,9 +2176,11 @@ namespace
 
         case WM_MOUSELEAVE:
             g_trackingMapMouse = false;
-            if (!g_model.hoverRoomTitle.empty())
+            if (!g_model.hoverRoomTitle.empty() ||
+                !g_model.hoverRoomAddress.empty())
             {
                 g_model.hoverRoomTitle.clear();
+                g_model.hoverRoomAddress.clear();
                 RECT header{};
                 GetClientRect(hwnd, &header);
                 header.bottom = MapHeaderHeight(hwnd);
@@ -2222,6 +2242,13 @@ namespace
             TextOutW(hdc, 10, headerY + cellH + 2, roomTitle.c_str(),
                 static_cast<int>(roomTitle.size()));
 
+            std::wstring roomAddress = L"방 주소: ";
+            roomAddress += g_model.hoverRoomAddress.empty()
+                ? L"-"
+                : g_model.hoverRoomAddress;
+            TextOutW(hdc, 10, headerY + cellH * 2 + 4, roomAddress.c_str(),
+                static_cast<int>(roomAddress.size()));
+
             MapGrid grid = BuildMapGrid();
             const int mapPixelWidth = grid.width * cellW;
             const int mapAreaWidth = std::max(1,
@@ -2242,12 +2269,15 @@ namespace
                     if (ch == 0 || ch == L' ') continue;
                     bool roomGlyph = IsRoomGlyph(ch);
                     std::wstring title;
+                    std::wstring address;
                     int hitRoomIndex = -1;
                     if (roomGlyph)
                     {
                         hitRoomIndex = static_cast<int>(roomIndex);
                         if (roomIndex < g_model.roomTitles.size())
                             title = g_model.roomTitles[roomIndex];
+                        if (roomIndex < g_model.roomAddresses.size())
+                            address = g_model.roomAddresses[roomIndex];
                         ++roomIndex;
                     }
                     int cw = std::max(1, KTinCharWidth(ch, true));
@@ -2282,6 +2312,7 @@ namespace
                         hit.y = y;
                         hit.roomIndex = hitRoomIndex;
                         hit.title = std::move(title);
+                        hit.address = std::move(address);
                         g_mapHits.push_back(std::move(hit));
                     }
                 }
